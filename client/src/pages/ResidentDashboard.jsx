@@ -12,13 +12,14 @@ import {
   mockBlocklist, mockWatchlist, formatTime, formatDate, formatDateTime,
   getTimeAgo, getStatusColor, getStatusLabel, getRiskBadge, getTrustColor
 } from '../data/mockData'
-import { QRCodeSVG } from 'qrcode.react'
+import { QRCodeCanvas } from 'qrcode.react'
 import { db } from '../firebase'
 import { doc, updateDoc } from 'firebase/firestore'
 import { validatePhoneFormat, checkPhoneUnique } from '../utils/phoneValidation'
 import {
   getPendingVisitorsForFlat, getVisitorHistoryForFlat,
-  approveVisitor, rejectVisitor, blockVisitor, getTodayEntries
+  approveVisitor, rejectVisitor, blockVisitor, getTodayEntries,
+  createPreApprovedPass, compressImageToBase64
 } from '../utils/visitorHelpers'
 
 export default function ResidentDashboard() {
@@ -65,6 +66,45 @@ export default function ResidentDashboard() {
   const [visitHistory, setVisitHistory] = useState([])
   const [todayEntries, setTodayEntries] = useState([])
   const [loadingVisitors, setLoadingVisitors] = useState(true)
+
+  // History tab filtering
+  const [historySearch, setHistorySearch] = useState('')
+  const [historyFilter, setHistoryFilter] = useState('All')
+
+  // History export function
+  const handleExportHistory = async () => {
+    try {
+      const xlsx = await import('xlsx');
+      const exportData = filteredHistory.map(v => ({
+        Date: new Date(v.entryTimestamp).toLocaleDateString('en-IN'),
+        Time: new Date(v.entryTimestamp).toLocaleTimeString('en-IN'),
+        Name: v.name,
+        Phone: v.phone,
+        Purpose: v.purpose,
+        Status: v.status,
+        Flat: v.flatGate
+      }));
+      
+      const worksheet = xlsx.utils.json_to_sheet(exportData);
+      const workbook = xlsx.utils.book_new();
+      xlsx.utils.book_append_sheet(workbook, worksheet, "Visitor History");
+      xlsx.writeFile(workbook, `visitor_history_${new Date().toISOString().split('T')[0]}.xlsx`);
+    } catch (e) {
+      console.error("Export failed: ", e);
+    }
+  }
+
+  // Filtered history
+  const filteredHistory = visitHistory.filter(v => {
+    const q = historySearch.toLowerCase()
+    const matchSearch = !q || v.name?.toLowerCase().includes(q) || v.phone?.includes(q)
+    const filterMap = {
+      'Pending': 'pending', 'Approved': 'approved', 
+      'Rejected': 'rejected', 'Entered': 'inside', 'Exited': 'exited'
+    }
+    const matchFilter = historyFilter === 'All' || v.status === filterMap[historyFilter]
+    return matchSearch && matchFilter
+  })
 
   // Load real visitor data
   useEffect(() => {
@@ -276,7 +316,7 @@ export default function ResidentDashboard() {
                 <div className="w-8 h-8 rounded-lg bg-red-500/15 flex items-center justify-center mb-2">
                   <Ban className="w-4 h-4 text-red-400" />
                 </div>
-                <p className="text-2xl font-bold text-white">{mockBlocklist.length}</p>
+                <p className="text-2xl font-bold text-white">{visitHistory.filter(v => v.status === 'blocked').length}</p>
                 <p className="text-xs text-slate-500">Blocked</p>
               </div>
             </div>
@@ -424,24 +464,34 @@ export default function ResidentDashboard() {
           <div className="animate-fade-in space-y-3">
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-semibold text-white">Visitor History</h2>
-              <button className="btn-outline text-xs py-1.5 px-3">Export</button>
+              <button onClick={handleExportHistory} className="btn-outline text-xs py-1.5 px-3 border-indigo-500/30 text-indigo-400 hover:border-indigo-500">Export to Excel</button>
             </div>
             <div className="relative">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
-              <input type="text" placeholder="Search by name or phone..." className="input-field pl-10" />
+              <input 
+                type="text" 
+                placeholder="Search by name or phone..." 
+                value={historySearch}
+                onChange={e => setHistorySearch(e.target.value)}
+                className="input-field pl-10" 
+              />
             </div>
             <div className="flex gap-2 overflow-x-auto pb-1">
               {['All', 'Approved', 'Rejected', 'Entered', 'Exited'].map(f => (
-                <button key={f} className={`px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-all ${
-                  f === 'All' ? 'bg-indigo-500/15 text-indigo-400 border border-indigo-500/30' : 'bg-slate-800/60 text-slate-400 border border-slate-700'
-                }`}>{f}</button>
+                <button 
+                  key={f} 
+                  onClick={() => setHistoryFilter(f)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-all ${
+                    f === historyFilter ? 'bg-indigo-500/15 text-indigo-400 border border-indigo-500/30' : 'bg-slate-800/60 text-slate-400 border border-slate-700 hover:border-slate-600'
+                  }`}
+                >{f}</button>
               ))}
             </div>
-            {visitHistory.length === 0 ? (
+            {filteredHistory.length === 0 ? (
               <div className="glass-card p-8 text-center">
-                <p className="text-slate-400 text-sm">No visit history yet</p>
+                <p className="text-slate-400 text-sm">No visitors found</p>
               </div>
-            ) : visitHistory.map(visitor => (
+            ) : filteredHistory.map(visitor => (
               <div key={visitor.id} className="glass-card p-4">
                 <div className="flex items-start gap-3">
                   <div className="w-10 h-10 rounded-xl bg-slate-800 border border-slate-700 flex items-center justify-center text-sm font-bold text-slate-500 overflow-hidden flex-shrink-0">
@@ -687,49 +737,12 @@ export default function ResidentDashboard() {
         )}
       </main>
 
-      {/* Pre-Approve Modal */}
+      {/* Pre-Approve Visitor Modal */}
       {showPreApprove && (
-        <div className="fixed inset-0 z-[100] bg-black/60 flex items-center justify-center p-4">
-          <div className="glass-card w-full max-w-md p-6 animate-fade-in">
-            <div className="flex items-center justify-between mb-5">
-              <h3 className="text-lg font-semibold text-white">Pre-Approve Guest</h3>
-              <button onClick={() => setShowPreApprove(false)} className="p-2 rounded-lg text-slate-400 hover:text-white">
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-            <form className="space-y-4">
-              <div>
-                <label className="block text-sm text-slate-400 mb-1.5">Guest Name</label>
-                <input type="text" placeholder="Full name" className="input-field" />
-              </div>
-              <div>
-                <label className="block text-sm text-slate-400 mb-1.5">Phone Number</label>
-                <input type="tel" placeholder="+91 98765 43210" className="input-field" />
-              </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm text-slate-400 mb-1.5">Valid From</label>
-                  <input type="datetime-local" className="input-field" />
-                </div>
-                <div>
-                  <label className="block text-sm text-slate-400 mb-1.5">Valid Until</label>
-                  <input type="datetime-local" className="input-field" />
-                </div>
-              </div>
-              <div className="bg-slate-800/50 rounded-xl p-4 text-center">
-                <p className="text-xs text-slate-400 mb-3">QR Code will be generated here</p>
-                <div className="w-32 h-32 mx-auto bg-white rounded-xl p-2 flex items-center justify-center">
-                  <QRCodeSVG value="securegate://preapproval/demo-token" size={110} />
-                </div>
-                <p className="text-xs text-slate-500 mt-2">Share this QR with your guest</p>
-              </div>
-              <div className="flex gap-2">
-                <button type="button" onClick={() => setShowPreApprove(false)} className="btn-outline flex-1 justify-center">Cancel</button>
-                <button type="submit" className="btn-success flex-1 justify-center">Generate Pass</button>
-              </div>
-            </form>
-          </div>
-        </div>
+        <PreApproveVisitorModal 
+           onClose={() => setShowPreApprove(false)} 
+           user={user} 
+        />
       )}
 
       {/* Chat Overlay */}
@@ -828,6 +841,189 @@ function ChatOverlay({ onClose }) {
             <button className="btn-primary px-3"><Send className="w-4 h-4" /></button>
           </div>
         </div>
+      </div>
+    </div>
+  )
+}
+
+/* ─── PRE-APPROVE VISITOR MODAL ─── */
+function PreApproveVisitorModal({ onClose, user }) {
+  const [formData, setFormData] = useState({
+    name: '',
+    phone: '',
+    purpose: '',
+    validFrom: '',
+    validUntil: '',
+    photo: null
+  })
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const [passId, setPassId] = useState(null)
+
+  const handlePhotoCapture = async (e) => {
+    const file = e.target.files?.[0]
+    if (file) {
+      if (file.size > 5 * 1024 * 1024) return alert('Max image size is 5MB.')
+      try {
+        const base64 = await compressImageToBase64(file, 400)
+        setFormData(prev => ({ ...prev, photo: base64 }))
+      } catch (err) {
+        alert('Could not compress photo.')
+      }
+    }
+  }
+
+  const handleSubmit = async (e) => {
+    e.preventDefault()
+    setLoading(true)
+    setError('')
+    try {
+      if (!validatePhoneFormat(formData.phone)) {
+        throw new Error('Phone number must be +91 followed by 10 digits.')
+      }
+      if (new Date(formData.validFrom) >= new Date(formData.validUntil)) {
+        throw new Error('Valid Until must be after Valid From time.')
+      }
+
+      const passData = {
+        name: formData.name,
+        phone: formData.phone,
+        purpose: formData.purpose,
+        flatGate: user.flatGate || user.flat,
+        societyName: user.societyName,
+        residentUid: user.uid,
+        validFrom: new Date(formData.validFrom).toISOString(),
+        validUntil: new Date(formData.validUntil).toISOString(),
+        type: 'pre_approved_visitor',
+        photo: formData.photo
+      }
+
+      const id = await createPreApprovedPass(passData)
+      setPassId(id)
+    } catch(err) {
+      setError(err.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const downloadQR = () => {
+    const canvas = document.getElementById('pass-qr-canvas')
+    if (canvas) {
+      const url = canvas.toDataURL('image/png')
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `visitor-pass-${formData.name}.png`
+      link.click()
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-[100] bg-black/60 flex items-center justify-center p-4">
+      <div className="glass-card w-full max-w-md p-6 animate-fade-in max-h-[90vh] overflow-y-auto">
+        <div className="flex items-center justify-between mb-5">
+          <h3 className="text-lg font-semibold text-white">Pre-Approve Visitor</h3>
+          <button onClick={onClose} className="p-2 rounded-lg text-slate-400 hover:text-white">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        {error && (
+          <div className="mb-4 bg-red-500/10 border border-red-500/50 text-red-500 text-sm p-3 rounded-lg">
+            {error}
+          </div>
+        )}
+
+        {passId ? (
+          <div className="space-y-4 text-center">
+            <div className="w-12 h-12 bg-green-500/20 rounded-full flex items-center justify-center mx-auto mb-2 text-green-400">
+              <CheckCircle className="w-6 h-6" />
+            </div>
+            <h4 className="text-lg font-bold text-white">Pass Generated Successfully!</h4>
+            <p className="text-sm text-slate-400">Scan this QR Code at the gate for instant entry.</p>
+            
+            <div className="bg-slate-800/50 rounded-xl p-6 inline-block mx-auto">
+              <div className="bg-white rounded-xl p-2 inline-block">
+                <QRCodeCanvas id="pass-qr-canvas" value={passId} size={150} level="H" includeMargin />
+              </div>
+            </div>
+            
+            <div className="text-left text-xs text-slate-500 bg-slate-800/30 p-3 rounded-lg space-y-1">
+              <p><span className="text-slate-400 font-medium">Visitor:</span> {formData.name}</p>
+              <p><span className="text-slate-400 font-medium">Phone:</span> {formData.phone}</p>
+              <p><span className="text-slate-400 font-medium">Valid:</span> {new Date(formData.validFrom).toLocaleString()} to {new Date(formData.validUntil).toLocaleString()}</p>
+            </div>
+
+            <div className="flex gap-2 mt-6">
+              <button onClick={downloadQR} className="btn-primary flex-1 justify-center">
+                Download Pass
+              </button>
+              <button onClick={onClose} className="btn-outline flex-1 justify-center">
+                Close
+              </button>
+            </div>
+          </div>
+        ) : (
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div>
+              <label className="block text-sm text-slate-400 mb-1.5">Visitor Name *</label>
+              <input type="text" placeholder="Full name" className="input-field" required value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} />
+            </div>
+            <div>
+              <label className="block text-sm text-slate-400 mb-1.5">Phone Number *</label>
+              <input type="tel" placeholder="+91 9876543210" className="input-field" required value={formData.phone} onChange={e => setFormData({...formData, phone: e.target.value})} />
+            </div>
+            <div>
+              <label className="block text-sm text-slate-400 mb-1.5">Purpose of Visit *</label>
+              <input type="text" placeholder="e.g. Guest, Delivery, Repair..." className="input-field" required value={formData.purpose} onChange={e => setFormData({...formData, purpose: e.target.value})} />
+            </div>
+            <div>
+              <label className="block text-sm text-slate-400 mb-1.5">Flat Number</label>
+              <input type="text" value={user.flatGate || user.flat} className="input-field opacity-50 cursor-not-allowed" disabled />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm text-slate-400 mb-1.5">Valid From *</label>
+                <input type="datetime-local" className="input-field text-sm px-2" required value={formData.validFrom} onChange={e => setFormData({...formData, validFrom: e.target.value})} />
+              </div>
+              <div>
+                <label className="block text-sm text-slate-400 mb-1.5">Valid Until *</label>
+                <input type="datetime-local" className="input-field text-sm px-2" required value={formData.validUntil} onChange={e => setFormData({...formData, validUntil: e.target.value})} />
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-sm text-slate-400 mb-1.5">Visitor Photo (Optional)</label>
+              <div className="relative border-2 border-dashed border-slate-700 rounded-xl p-4 text-center hover:bg-slate-800/50 transition-colors">
+                <input 
+                  type="file" 
+                  accept="image/*" 
+                  capture="environment" 
+                  className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                  onChange={handlePhotoCapture} 
+                />
+                {formData.photo ? (
+                  <div className="flex items-center justify-center gap-2 text-green-400">
+                    <CheckCircle className="w-4 h-4" />
+                    <span className="text-sm">Photo Captured</span>
+                  </div>
+                ) : (
+                  <div className="flex items-center justify-center gap-2 text-slate-500">
+                    <Camera className="w-5 h-5" />
+                    <span className="text-sm">Tap to take a photo or upload</span>
+                  </div>
+                )}
+              </div>
+            </div>
+            
+            <div className="flex gap-2 pt-2">
+              <button type="button" disabled={loading} onClick={onClose} className="btn-outline flex-1 justify-center">Cancel</button>
+              <button type="submit" disabled={loading} className="btn-success flex-1 justify-center">
+                {loading ? 'Generating...' : 'Generate Pass'}
+              </button>
+            </div>
+          </form>
+        )}
       </div>
     </div>
   )

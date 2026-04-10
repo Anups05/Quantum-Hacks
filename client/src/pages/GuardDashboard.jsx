@@ -4,17 +4,18 @@ import {
   Shield, LogOut, Plus, QrCode, Camera, AlertTriangle,
   CheckCircle, XCircle, Clock, Users, UserPlus, Search,
   Phone, Home, Eye, MapPin, Bell, X, Send, User,
-  ScanLine, LogIn, DoorOpen
+  ScanLine, LogIn, DoorOpen, RefreshCw
 } from 'lucide-react'
 import { mockAlerts, getTimeAgo, getStatusColor, getStatusLabel } from '../data/mockData'
 import { QRCodeSVG } from 'qrcode.react'
 import { validatePhoneFormat } from '../utils/phoneValidation'
 import {
   compressImageToBase64, lookupVisitorProfile, saveVisitorProfile,
-  logVisitorEntry, getTodayEntries, markVisitorInside,
+  logVisitorEntry, markPreApprovedVisitorInside, getTodayEntries, markVisitorInside,
   markVisitorExit, getAllVisitorsForSociety, decryptPhoto,
-  verifyOtpToken
+  verifyOtpToken, checkIfSocietyMember, getPassById
 } from '../utils/visitorHelpers'
+import { Html5QrcodeScanner } from 'html5-qrcode'
 
 export default function GuardDashboard() {
   const { user, logout } = useContext(AuthContext)
@@ -114,9 +115,9 @@ export default function GuardDashboard() {
 
       <main className="max-w-7xl mx-auto p-4 pb-24 space-y-4">
         {activeTab === 'home' && <HomeTab user={user} todayEntries={todayEntries} loading={entriesLoading} setTodayEntries={setTodayEntries} onNavigate={setActiveTab} />}
-        {activeTab === 'log' && <NewEntryTab user={user} approvedEntries={todayEntries.filter(v => v.status === 'approved')} onDone={() => setActiveTab('home')} />}
+        {activeTab === 'log' && <NewEntryTab user={user} todayEntries={todayEntries} onDone={() => setActiveTab('home')} />}
         {activeTab === 'scan' && <ScanTab user={user} />}
-        {activeTab === 'visitors' && <VisitorsTab user={user} />}
+        {activeTab === 'visitors' && <VisitorsTab user={user} todayEntries={todayEntries} loading={entriesLoading} />}
       </main>
 
       {/* Panic Button */}
@@ -294,6 +295,7 @@ function ActiveVisitorCard({ visitor, onStatusChange }) {
                 <span className="flex items-center gap-1"><Home className="w-3 h-3" />{visitor.flatGate}</span>
                 <span>{visitor.purpose}</span>
                 <span>{getTimeAgo(visitor.entryTimestamp)}</span>
+                <span>{visitor.phone}</span>
               </div>
             </div>
           </div>
@@ -325,11 +327,8 @@ function ActiveVisitorCard({ visitor, onStatusChange }) {
                 <div className="p-2 bg-white rounded-xl inline-block">
                   <QRCodeSVG value={visitor.qrToken} size={100} />
                 </div>
-                <div className="text-xs text-slate-400 space-y-1">
-                  <p>Visitor scans QR with phone</p>
-                  <p>Gets a <span className="text-white font-bold">6-digit OTP</span></p>
-                  <p>Guard enters OTP in</p>
-                  <p className="text-indigo-400 font-medium">Scan QR tab → Verify</p>
+                <div className="text-sm font-medium text-slate-300 flex items-center pr-4">
+                  <p>Scan QR Code to Verify</p>
                 </div>
               </div>
             </div>
@@ -341,7 +340,7 @@ function ActiveVisitorCard({ visitor, onStatusChange }) {
 }
 
 /* ─────────────────────────── NEW ENTRY TAB ─── */
-function NewEntryTab({ user, approvedEntries, onDone }) {
+function NewEntryTab({ user, todayEntries, onDone }) {
   const fileInputRef = useRef(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -411,6 +410,13 @@ function NewEntryTab({ user, approvedEntries, onDone }) {
 
     setLoading(true)
     try {
+      const isMember = await checkIfSocietyMember(user.societyName, formData.phone)
+      if (isMember) {
+        setError(`Cannot log entry: Phone number belongs to a registered ${isMember.role} of the society.`)
+        setLoading(false)
+        return
+      }
+
       // Save profile if new visitor
       if (!returningProfile) {
         await saveVisitorProfile({
@@ -441,7 +447,7 @@ function NewEntryTab({ user, approvedEntries, onDone }) {
   }
 
   if (submitted) {
-    return <EntrySuccess entry={submitted} approvedEntries={approvedEntries} onReset={() => {
+    return <EntrySuccess entry={submitted} todayEntries={todayEntries} onReset={() => {
       setSubmitted(null)
       setFormData({ name: '', phone: '+91', purpose: '', flatGate: '', photo: null })
       setPhotoFile(null)
@@ -630,7 +636,7 @@ function NewEntryTab({ user, approvedEntries, onDone }) {
 
           <div className="flex items-center gap-2 text-xs text-slate-500">
             <MapPin className="w-3.5 h-3.5 text-green-400" />
-            <span>Entry logged at {user.flatGate || 'Gate'} — {new Date().toLocaleTimeString('en-IN')}</span>
+            <span>Entry Logged at - {new Date().toLocaleTimeString('en-IN')}</span>
           </div>
 
           <button type="submit" disabled={loading} className="w-full btn-primary justify-center py-3">
@@ -643,10 +649,29 @@ function NewEntryTab({ user, approvedEntries, onDone }) {
   )
 }
 /* ─────────────────────────── ENTRY SUCCESS ─── */
-function EntrySuccess({ entry, approvedEntries, onReset }) {
-  // Check real-time if this specific entry has been approved
-  const approvedEntry = approvedEntries?.find(v => v.id === entry.id)
-  const isApproved = !!approvedEntry
+function EntrySuccess({ entry, todayEntries, onReset }) {
+  // Check real-time if this specific entry has been approved, rejected or blocked
+  const currentEntry = todayEntries?.find(v => v.id === entry.id)
+  const isApproved = currentEntry?.status === 'approved'
+  const isRejected = currentEntry?.status === 'rejected'
+  const isBlocked = currentEntry?.status === 'blocked'
+
+  if (isRejected || isBlocked) {
+    return (
+      <div className="glass-card p-6 text-center animate-fade-in border border-red-500/30">
+        <div className="w-16 h-16 rounded-2xl bg-red-500/15 flex items-center justify-center mx-auto mb-4">
+          <AlertTriangle className="w-8 h-8 text-red-500" />
+        </div>
+        <h3 className="text-xl font-bold text-white mb-2">Entry Denied</h3>
+        <p className="text-sm text-slate-400 mb-6">
+          The resident has <strong className="text-red-400">{isBlocked ? 'permanently blocked' : 'rejected'}</strong> this visitor. Access is not granted.
+        </p>
+        <button onClick={onReset} className="w-full btn-danger justify-center py-3">
+          <RefreshCw className="w-4 h-4 mr-2" /> Log Another Visitor
+        </button>
+      </div>
+    )
+  }
 
   return (
     <div className="glass-card p-6 text-center animate-fade-in">
@@ -682,19 +707,17 @@ function EntrySuccess({ entry, approvedEntries, onReset }) {
       </div>
 
       {/* Live approval banner */}
-      {isApproved && approvedEntry.qrToken ? (
+      {isApproved && currentEntry?.qrToken ? (
         <div className="mb-5 p-4 rounded-xl bg-green-500/10 border border-green-500/30 animate-fade-in">
           <p className="text-green-400 font-semibold text-sm mb-3 flex items-center justify-center gap-2">
             <CheckCircle className="w-4 h-4" /> Resident Approved! QR Ready
           </p>
           <div className="flex gap-4 items-center justify-center">
             <div className="p-2 bg-white rounded-xl inline-block">
-              <QRCodeSVG value={approvedEntry.qrToken} size={110} />
+              <QRCodeSVG value={currentEntry.qrToken} size={110} />
             </div>
-            <div className="text-xs text-slate-400 space-y-1 text-left">
-              <p>Show QR to visitor</p>
-              <p>They scan → get OTP</p>
-              <p>Enter OTP in <span className="text-indigo-400 font-medium">Scan QR tab</span></p>
+            <div className="text-sm font-medium text-slate-300 flex items-center pr-4">
+              <p>Scan QR Code to Verify</p>
             </div>
           </div>
         </div>
@@ -717,6 +740,100 @@ function ScanTab({ user }) {
   const otpRefs = useRef([])
   const [scanning, setScanning] = useState(false)
   const [result, setResult] = useState(null)
+  const scannerRef = useRef(null)
+
+  useEffect(() => {
+    if (scanning) {
+      if (!scannerRef.current) {
+        setResult({ status: 'info', message: 'Initializing camera...' })
+        // Use Html5Qrcode instead of Scanner to force direct camera feed and avoid drag&drop UI
+        import('html5-qrcode').then(({ Html5Qrcode }) => {
+          Html5Qrcode.getCameras().then(devices => {
+            if (devices && devices.length) {
+              const html5QrCode = new Html5Qrcode("qr-reader")
+              scannerRef.current = html5QrCode
+              html5QrCode.start(
+                { facingMode: "environment" }, // prefer back camera
+                { fps: 10, qrbox: { width: 250, height: 250 } },
+                onScanSuccess,
+                onScanFailure
+              )
+            } else {
+              setResult({ status: 'error', message: 'No cameras found on your device.' })
+              setScanning(false)
+            }
+          }).catch(err => {
+            setResult({ status: 'error', message: 'Camera permission denied or camera not found.' })
+            setScanning(false)
+          })
+        })
+      }
+    } else {
+      if (scannerRef.current) {
+        scannerRef.current.stop().then(() => {
+          scannerRef.current.clear()
+          scannerRef.current = null
+        }).catch(err => console.log(err))
+      }
+    }
+
+    return () => {
+      if (scannerRef.current) {
+        scannerRef.current.stop().then(() => {
+          scannerRef.current.clear()
+          scannerRef.current = null
+        }).catch(err => console.log(err))
+      }
+    }
+  }, [scanning])
+
+  const onScanSuccess = async (decodedText, decodedResult) => {
+    // Attempt fetching the pass
+    setScanning(false) // stop scanning immediately
+    setResult({ status: 'info', message: 'Verifying Pass...' })
+    
+    try {
+      const pass = await getPassById(decodedText)
+      
+      if (!pass) {
+        throw new Error("Invalid or unrecognizable QR Pass.")
+      }
+      
+      const now = new Date()
+      const validFrom = new Date(pass.validFrom)
+      const validUntil = new Date(pass.validUntil)
+      
+      if (now < validFrom) {
+        throw new Error(`Pass is not valid yet (Starts ${validFrom.toLocaleString()}).`)
+      }
+      if (now > validUntil) {
+        throw new Error(`Pass has expired (Ended ${validUntil.toLocaleString()}).`)
+      }
+      if (pass.status !== 'pre_approved_active') {
+        throw new Error(`Pass is inactive or has already been used.`)
+      }
+
+      setResult({ status: 'info', message: 'Logging visitor...' })
+      await logPreApprovedEntry({
+        name: pass.name,
+        phone: pass.phone,
+        purpose: pass.purpose,
+        flatGate: pass.flatGate,
+        societyName: pass.societyName,
+        enteredBy: user.uid,
+        validFrom: pass.validFrom,
+        validUntil: pass.validUntil
+      })
+
+      setResult({ status: 'success', message: `${pass.name} pre-approved and marked INSIDE.` })
+    } catch (err) {
+      setResult({ status: 'error', message: err.message })
+    }
+  }
+
+  const onScanFailure = (error) => {
+    // handle scan failure, usually better to ignore and keep scanning
+  }
 
   const handleOtpChange = (idx, val) => {
     if (!/^\d*$/.test(val)) return  // digits only
@@ -739,7 +856,7 @@ function ScanTab({ user }) {
       return
     }
     try {
-      setResult({ status: 'info', message: 'Verifying...' })
+      setResult({ status: 'info', message: 'Verifying OTP...' })
       const visitor = await verifyOtpToken(token, user.societyName)
       setResult({ status: 'success', message: `Visitor ${visitor.name} marked inside.` })
       setOtpInput(['', '', '', '', '', '']) // reset
@@ -755,23 +872,26 @@ function ScanTab({ user }) {
           <QrCode className="w-5 h-5 text-indigo-400" /> QR Pass Scanner
         </h3>
 
-        <div className="aspect-square max-w-sm mx-auto rounded-2xl bg-slate-900 border-2 border-dashed border-slate-700 flex flex-col items-center justify-center gap-4 relative overflow-hidden">
-          <div className="absolute inset-4 border-2 border-indigo-500/30 rounded-xl">
-            <div className="absolute top-0 left-0 w-8 h-8 border-t-2 border-l-2 border-indigo-500 rounded-tl-lg" />
-            <div className="absolute top-0 right-0 w-8 h-8 border-t-2 border-r-2 border-indigo-500 rounded-tr-lg" />
-            <div className="absolute bottom-0 left-0 w-8 h-8 border-b-2 border-l-2 border-indigo-500 rounded-bl-lg" />
-            <div className="absolute bottom-0 right-0 w-8 h-8 border-b-2 border-r-2 border-indigo-500 rounded-br-lg" />
-            <div className="absolute left-0 right-0 h-0.5 bg-gradient-to-r from-transparent via-indigo-500 to-transparent animate-bounce" style={{ top: '50%' }} />
+        {!scanning ? (
+          <div className="aspect-square max-w-sm mx-auto rounded-2xl bg-slate-900 border-2 border-dashed border-slate-700 flex flex-col items-center justify-center gap-4 relative overflow-hidden">
+            <ScanLine className="w-12 h-12 text-slate-600" />
+            <div className="text-center z-10">
+              <p className="text-sm text-slate-400">Point camera at QR code</p>
+              <p className="text-xs text-slate-600 mt-1">Visitor's approved pass QR</p>
+            </div>
           </div>
-          <ScanLine className="w-12 h-12 text-slate-600" />
-          <div className="text-center z-10">
-            <p className="text-sm text-slate-400">Point camera at QR code</p>
-            <p className="text-xs text-slate-600 mt-1">Visitor's approved pass QR</p>
+        ) : (
+          <div className="max-w-sm mx-auto overflow-hidden rounded-2xl border-2 border-indigo-500">
+            <div id="qr-reader" className="w-full bg-slate-900"></div>
           </div>
-        </div>
+        )}
+
         <div className="mt-4 text-center">
-          <button className="btn-primary" onClick={() => setScanning(!scanning)}>
-            <Camera className="w-4 h-4" /> Open Camera Scanner
+          <button className={scanning ? 'btn-danger' : 'btn-primary'} onClick={() => {
+            setScanning(!scanning)
+            if (scanning) setResult(null)
+          }}>
+            <Camera className="w-4 h-4" /> {scanning ? 'Stop Camera' : 'Open Camera Scanner'}
           </button>
         </div>
 
@@ -818,23 +938,13 @@ function ScanTab({ user }) {
 }
 
 /* ─────────────────────────── VISITORS TAB ─── */
-function VisitorsTab({ user }) {
-  const [visitors, setVisitors] = useState([])
-  const [loading, setLoading] = useState(true)
+function VisitorsTab({ user, todayEntries, loading }) {
   const [search, setSearch] = useState('')
   const [filter, setFilter] = useState('All')
 
-  useEffect(() => {
-    if (!user?.societyName) return
-    getAllVisitorsForSociety(user.societyName).then(v => {
-      setVisitors(v)
-      setLoading(false)
-    }).catch(() => setLoading(false))
-  }, [user])
-
   const filters = ['All', 'Pending', 'Approved', 'Inside', 'Rejected', 'Exited']
 
-  const filtered = visitors.filter(v => {
+  const filtered = (todayEntries || []).filter(v => {
     const q = search.toLowerCase()
     const matchSearch = !q ||
       v.name?.toLowerCase().includes(q) ||

@@ -22,12 +22,34 @@ import {
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend
 } from 'recharts'
 import { validatePhoneFormat, checkPhoneUnique } from '../utils/phoneValidation'
-import { getAllVisitorsForSociety } from '../utils/visitorHelpers'
+import { getAllVisitorsForSociety, getAllGuardsForSociety } from '../utils/visitorHelpers'
 
 export default function AdminDashboard() {
   const { user, logout } = useContext(AuthContext)
   const [activeSection, setActiveSection] = useState('overview')
   const [sidebarOpen, setSidebarOpen] = useState(true)
+  const [societyVisitors, setSocietyVisitors] = useState([])
+  const [societyGuards, setSocietyGuards] = useState([])
+  const [dataLoading, setDataLoading] = useState(true)
+
+  useEffect(() => {
+    if (!user?.societyName) return
+    const fetchData = async () => {
+      try {
+        const [visitors, guards] = await Promise.all([
+          getAllVisitorsForSociety(user.societyName),
+          getAllGuardsForSociety(user.societyName)
+        ])
+        setSocietyVisitors(visitors)
+        setSocietyGuards(guards)
+      } catch (err) {
+        console.error("Failed to load dashboard data:", err)
+      } finally {
+        setDataLoading(false)
+      }
+    }
+    fetchData()
+  }, [user])
 
   const navItems = [
     { id: 'overview', label: 'Overview', icon: LayoutDashboard },
@@ -66,11 +88,14 @@ export default function AdminDashboard() {
               <button
                 key={item.id}
                 onClick={() => setActiveSection(item.id)}
-                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all ${
+                className={`w-full relative flex items-center gap-3 rounded-xl text-sm font-medium transition-all ${
+                  sidebarOpen ? 'px-3 py-2.5' : 'justify-center py-3'
+                } ${
                   isActive
                     ? 'bg-indigo-500/15 text-indigo-400 border border-indigo-500/20'
                     : 'text-slate-400 hover:text-white hover:bg-slate-800/50'
                 }`}
+                title={!sidebarOpen ? item.label : undefined}
               >
                 <Icon className="w-5 h-5 flex-shrink-0" />
                 {sidebarOpen && <span className="flex-1 text-left">{item.label}</span>}
@@ -79,6 +104,9 @@ export default function AdminDashboard() {
                     {item.badge}
                   </span>
                 )}
+                {!sidebarOpen && item.badge > 0 && (
+                  <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-red-500" />
+                )}
               </button>
             )
           })}
@@ -86,8 +114,8 @@ export default function AdminDashboard() {
 
         {/* User */}
         <div className="p-3 border-t border-slate-800">
-          <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-lg bg-amber-500/20 text-amber-400 flex items-center justify-center text-xs font-bold flex-shrink-0">
+          <div className={`flex items-center ${sidebarOpen ? 'gap-3' : 'gap-2 flex-col justify-center'}`}>
+            <div className="w-9 h-9 rounded-lg bg-amber-500/20 text-amber-400 flex items-center justify-center text-xs font-bold flex-shrink-0" title={user?.name}>
               {user?.name?.split(' ').map(n => n.charAt(0)).join('').substring(0, 2).toUpperCase() || 'U'}
             </div>
             {sidebarOpen && (
@@ -96,7 +124,7 @@ export default function AdminDashboard() {
                 <p className="text-[10px] text-slate-500">Admin</p>
               </div>
             )}
-            <button onClick={logout} className="p-2 rounded-lg text-slate-500 hover:text-red-400 transition-colors flex-shrink-0">
+            <button onClick={logout} className="p-2 rounded-lg text-slate-500 hover:text-red-400 transition-colors flex-shrink-0" title="Logout">
               <LogOut className="w-4 h-4" />
             </button>
           </div>
@@ -134,25 +162,25 @@ export default function AdminDashboard() {
 
         <div className="p-6 space-y-6">
           {/* OVERVIEW */}
-          {activeSection === 'overview' && <OverviewSection user={user} onNavigate={setActiveSection} />}
+          {activeSection === 'overview' && <OverviewSection user={user} onNavigate={setActiveSection} societyVisitors={societyVisitors} />}
 
           {/* VERIFY RESIDENTS */}
           {activeSection === 'verify' && <VerifyResidentsSection />}
 
           {/* VISITORS */}
-          {activeSection === 'visitors' && <VisitorsSection />}
+          {activeSection === 'visitors' && <VisitorsSection societyVisitors={societyVisitors} societyGuards={societyGuards} />}
 
           {/* ALERTS */}
           {activeSection === 'alerts' && <AlertsSection />}
 
           {/* ANALYTICS */}
-          {activeSection === 'analytics' && <AnalyticsSection />}
+          {activeSection === 'analytics' && <AnalyticsSection societyVisitors={societyVisitors} />}
 
           {/* HEATMAP */}
-          {activeSection === 'heatmap' && <HeatmapSection />}
+          {activeSection === 'heatmap' && <HeatmapSection societyVisitors={societyVisitors} />}
 
           {/* GUARDS */}
-          {activeSection === 'guards' && <GuardsSection />}
+          {activeSection === 'guards' && <GuardsSection societyVisitors={societyVisitors} societyGuards={societyGuards} />}
 
           {/* SETTINGS */}
           {activeSection === 'settings' && <SettingsSection />}
@@ -162,41 +190,61 @@ export default function AdminDashboard() {
   )
 }
 
-function OverviewSection({ user, onNavigate }) {
+function OverviewSection({ user, onNavigate, societyVisitors }) {
   const [realStats, setRealStats] = useState({
     todayVisitors: 0,
     currentlyInside: 0,
     approvalRate: 0,
     weekVisitors: 0
   })
+  const [weeklyTrend, setWeeklyTrend] = useState([])
 
   useEffect(() => {
-    if (!user?.societyName) return;
-    getAllVisitorsForSociety(user.societyName).then(visitors => {
-      // Calculate 'todayString' in IST
-      const now = new Date()
-      const ist = new Date(now.getTime() + (5.5 * 60 * 60 * 1000))
-      const todayString = ist.toISOString().slice(0, 10)
-      
-      const todayVisitors = visitors.filter(v => v.date === todayString)
-      const insideCount = todayVisitors.filter(v => v.status === 'inside').length
-      
-      const resolvedToday = todayVisitors.filter(v => v.status !== 'pending')
-      const approvedCount = resolvedToday.filter(v => ['approved', 'inside', 'exited'].includes(v.status)).length
-      const approvalRate = resolvedToday.length === 0 ? 100 : Math.round((approvedCount / resolvedToday.length) * 100)
-      
-      const aWeekAgo = new Date()
-      aWeekAgo.setDate(aWeekAgo.getDate() - 7)
-      const thisWeekVisitors = visitors.filter(v => new Date(v.entryTimestamp) > aWeekAgo)
+    if (!societyVisitors) return
 
-      setRealStats({
-        todayVisitors: todayVisitors.length,
-        currentlyInside: insideCount,
-        approvalRate,
-        weekVisitors: thisWeekVisitors.length
+    // Calculate 'todayString' in IST
+    const now = new Date()
+    const ist = new Date(now.getTime() + (5.5 * 60 * 60 * 1000))
+    const todayString = ist.toISOString().slice(0, 10)
+    
+    const todayVisitors = societyVisitors.filter(v => v.date === todayString)
+    const insideCount = todayVisitors.filter(v => v.status === 'inside').length
+    
+    const resolvedToday = todayVisitors.filter(v => v.status !== 'pending')
+    const approvedCount = resolvedToday.filter(v => ['approved', 'inside', 'exited'].includes(v.status)).length
+    const approvalRate = resolvedToday.length === 0 ? 0 : Math.round((approvedCount / resolvedToday.length) * 100)
+    
+    const aWeekAgo = new Date()
+    aWeekAgo.setDate(aWeekAgo.getDate() - 7)
+    const thisWeekVisitors = societyVisitors.filter(v => new Date(v.entryTimestamp) > aWeekAgo)
+
+    setRealStats({
+      todayVisitors: todayVisitors.length,
+      currentlyInside: insideCount,
+      approvalRate,
+      weekVisitors: thisWeekVisitors.length
+    })
+
+    // Calculate Weekly Trend
+    const last7Days = []
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date(now)
+      d.setDate(d.getDate() - i)
+      const dayStr = d.toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' })
+      const ds = new Date(d.getTime() + (5.5 * 60 * 60 * 1000)).toISOString().slice(0, 10) // IST date string
+
+      const daysVisits = societyVisitors.filter(v => v.date === ds)
+      const daysApproved = daysVisits.filter(v => ['approved', 'inside', 'exited'].includes(v.status)).length
+      
+      last7Days.push({
+        day: dayStr,
+        visitors: daysVisits.length,
+        approved: daysApproved
       })
-    }).catch(console.error)
-  }, [user])
+    }
+    setWeeklyTrend(last7Days)
+
+  }, [societyVisitors])
 
   const stats = [
     { label: 'Visitors Today', value: realStats.todayVisitors, icon: Users, color: 'blue', trend: '', up: true },
@@ -204,7 +252,6 @@ function OverviewSection({ user, onNavigate }) {
     { label: 'Approval Rate', value: `${realStats.approvalRate}%`, icon: CheckCircle, color: 'emerald', trend: '', up: true },
     { label: 'Active Alerts', value: mockAlerts.filter(a => !a.resolved).length, icon: AlertTriangle, color: 'red', trend: '', up: false },
     { label: 'This Week', value: realStats.weekVisitors, icon: TrendingUp, color: 'purple', trend: '', up: true },
-    { label: 'Avg Entry Time', value: mockAnalytics.avgEntryTime, icon: Clock, color: 'amber', trend: '', up: true },
   ]
 
   return (
@@ -244,7 +291,7 @@ function OverviewSection({ user, onNavigate }) {
             </button>
           </div>
           <ResponsiveContainer width="100%" height={250}>
-            <AreaChart data={mockAnalytics.weeklyTrend}>
+            <AreaChart data={weeklyTrend}>
               <defs>
                 <linearGradient id="colorVisitors" x1="0" y1="0" x2="0" y2="1">
                   <stop offset="5%" stopColor="#6366f1" stopOpacity={0.3} />
@@ -375,8 +422,16 @@ function OverviewSection({ user, onNavigate }) {
   )
 }
 
-function VisitorsSection() {
+function VisitorsSection({ societyVisitors, societyGuards }) {
   const [selectedVisitor, setSelectedVisitor] = useState(null)
+  
+  const getGuardName = (uid) => {
+    const guard = societyGuards?.find(g => g.uid === uid || g.id === uid)
+    return guard ? guard.name || guard.email : 'Unknown Guard'
+  }
+
+  // Display only real visitors, reversed so newest is first
+  const displayVisitors = [...(societyVisitors || [])].reverse()
 
   return (
     <div className="animate-fade-in space-y-4">
@@ -431,32 +486,32 @@ function VisitorsSection() {
               </tr>
             </thead>
             <tbody>
-              {mockVisitors.map(v => (
+              {displayVisitors.map(v => (
                 <tr key={v.id} onClick={() => setSelectedVisitor(v)} className="border-b border-slate-800/50 hover:bg-slate-800/30 cursor-pointer transition-colors">
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-2">
                       <div className="w-8 h-8 rounded-lg bg-slate-800 flex items-center justify-center text-xs font-bold text-slate-500">
-                        {v.name.charAt(0)}
+                        {v.name?.charAt(0) || '?'}
                       </div>
                       <span className="text-sm text-white">{v.name}</span>
-                      {v.isDelivery && <Truck className="w-3.5 h-3.5 text-blue-400" />}
+                      {v.purpose?.toLowerCase().includes('delivery') && <Truck className="w-3.5 h-3.5 text-blue-400" />}
                     </div>
                   </td>
                   <td className="px-4 py-3 text-sm text-slate-400">{v.phone}</td>
                   <td className="px-4 py-3 text-sm text-slate-400">{v.purpose}</td>
-                  <td className="px-4 py-3 text-sm text-slate-400">{v.flat}</td>
+                  <td className="px-4 py-3 text-sm text-slate-400">{v.flatGate || v.flat}</td>
                   <td className="px-4 py-3"><span className={`badge ${getStatusColor(v.status)}`}>{getStatusLabel(v.status)}</span></td>
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-1.5">
                       <div className="w-12 h-1.5 rounded-full bg-slate-800">
-                        <div className="h-full rounded-full" style={{ width: `${v.trustScore}%`, backgroundColor: getTrustColor(v.trustScore) }} />
+                        <div className="h-full rounded-full" style={{ width: `${v.trustScore || 85}%`, backgroundColor: getTrustColor(v.trustScore || 85) }} />
                       </div>
-                      <span className="text-xs" style={{ color: getTrustColor(v.trustScore) }}>{v.trustScore}</span>
+                      <span className="text-xs" style={{ color: getTrustColor(v.trustScore || 85) }}>{v.trustScore || 85}</span>
                     </div>
                   </td>
-                  <td className="px-4 py-3"><span className={`badge ${getRiskBadge(v.riskLevel)}`}>{v.riskLevel}</span></td>
-                  <td className="px-4 py-3 text-xs text-slate-500">{getTimeAgo(v.timestamp)}</td>
-                  <td className="px-4 py-3 text-xs text-slate-400">{v.guardName}</td>
+                  <td className="px-4 py-3"><span className={`badge ${getRiskBadge(v.riskLevel || 'Low')}`}>{v.riskLevel || 'Low'}</span></td>
+                  <td className="px-4 py-3 text-xs text-slate-500">{getTimeAgo(v.entryTimestamp)}</td>
+                  <td className="px-4 py-3 text-xs text-slate-400">{getGuardName(v.enteredBy)}</td>
                 </tr>
               ))}
             </tbody>
@@ -477,27 +532,27 @@ function VisitorsSection() {
             <div className="space-y-4">
               <div className="flex items-center gap-4">
                 <div className="w-16 h-16 rounded-xl bg-slate-800 border border-slate-700 flex items-center justify-center text-2xl font-bold text-slate-500">
-                  {selectedVisitor.name.charAt(0)}
+                  {selectedVisitor.name?.charAt(0) || '?'}
                 </div>
                 <div>
                   <p className="text-lg font-semibold text-white">{selectedVisitor.name}</p>
                   <p className="text-sm text-slate-400">{selectedVisitor.phone}</p>
                   <div className="flex gap-2 mt-1">
                     <span className={`badge ${getStatusColor(selectedVisitor.status)}`}>{getStatusLabel(selectedVisitor.status)}</span>
-                    <span className={`badge ${getRiskBadge(selectedVisitor.riskLevel)}`}>{selectedVisitor.riskLevel} Risk</span>
+                    <span className={`badge ${getRiskBadge(selectedVisitor.riskLevel || 'Low')}`}>{selectedVisitor.riskLevel || 'Low'} Risk</span>
                   </div>
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-3">
                 {[
                   { label: 'Purpose', value: selectedVisitor.purpose },
-                  { label: 'Flat', value: selectedVisitor.flat },
-                  { label: 'Guard', value: selectedVisitor.guardName },
-                  { label: 'Gate', value: selectedVisitor.gate },
-                  { label: 'Trust Score', value: `${selectedVisitor.trustScore}/100` },
-                  { label: 'Face Match', value: selectedVisitor.faceMatch },
-                  { label: 'Entry Time', value: selectedVisitor.entryTime ? formatDateTime(selectedVisitor.entryTime) : '—' },
-                  { label: 'Exit Time', value: selectedVisitor.exitTime ? formatDateTime(selectedVisitor.exitTime) : '—' },
+                  { label: 'Flat', value: selectedVisitor.flatGate || selectedVisitor.flat },
+                  { label: 'Guard', value: getGuardName(selectedVisitor.enteredBy) },
+                  { label: 'Gate', value: selectedVisitor.gate || 'Main Gate' },
+                  { label: 'Trust Score', value: `${selectedVisitor.trustScore || 85}/100` },
+                  { label: 'Face Match', value: selectedVisitor.faceMatch || '98%' },
+                  { label: 'Entry Time', value: selectedVisitor.entryTimestamp ? formatDateTime(selectedVisitor.entryTimestamp) : '—' },
+                  { label: 'Exit Time', value: selectedVisitor.exitTimestamp ? formatDateTime(selectedVisitor.exitTimestamp) : '—' },
                 ].map((field, i) => (
                   <div key={i}>
                     <p className="text-xs text-slate-500">{field.label}</p>
@@ -575,28 +630,114 @@ function AlertsSection() {
   )
 }
 
-function AnalyticsSection() {
+function AnalyticsSection({ societyVisitors }) {
+  const [periodDays, setPeriodDays] = useState(7)
+  const [chartsData, setChartsData] = useState({
+    trend: [],
+    topFlats: [],
+    hourly: []
+  })
+  const [dateRangeStr, setDateRangeStr] = useState('')
+
+  useEffect(() => {
+    if (!societyVisitors) return
+
+    const now = new Date()
+    const startDate = new Date(now)
+    startDate.setDate(startDate.getDate() - (periodDays - 1))
+    
+    // Format Date Range String
+    const formatDate = (date) => date.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: '2-digit' })
+    setDateRangeStr(`${formatDate(startDate)} - ${formatDate(now)}`)
+
+    // Pre-calculate date boundaries
+    const startObj = new Date(startDate.setHours(0,0,0,0))
+    const endObj = new Date(now.setHours(23,59,59,999))
+
+    // Filter relevant visitors
+    const periodVisitors = societyVisitors.filter(v => {
+      const vDate = new Date(v.entryTimestamp)
+      return vDate >= startObj && vDate <= endObj
+    })
+
+    // 1. Weekly Trend (or period trend)
+    const trendMap = {}
+    for (let i = periodDays - 1; i >= 0; i--) {
+      const d = new Date(now)
+      d.setDate(d.getDate() - i)
+      const istString = new Date(d.getTime() + (5.5 * 60 * 60 * 1000)).toISOString().slice(0, 10)
+      trendMap[istString] = { day: d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }), approved: 0, rejected: 0 }
+    }
+
+    // 2. Top Flats
+    const flatCounts = {}
+
+    // 3. Hourly visits
+    const hourlyCounts = Array.from({ length: 24 }, (_, i) => ({
+      hour: i.toString().padStart(2, '0'),
+      visitors: 0
+    }))
+
+    periodVisitors.forEach(v => {
+      // Trend
+      if (trendMap[v.date]) {
+         if (['approved', 'inside', 'exited'].includes(v.status)) trendMap[v.date].approved++
+         if (v.status === 'rejected') trendMap[v.date].rejected++
+      }
+
+      // Flats
+      if (v.flatGate && v.flatGate !== 'Gate') {
+        flatCounts[v.flatGate] = (flatCounts[v.flatGate] || 0) + 1
+      }
+
+      // Hourly
+      const entryDate = new Date(v.entryTimestamp)
+      // Convert to IST hour roughly
+      const entryHour = new Date(entryDate.getTime() + (5.5 * 60 * 60 * 1000)).getUTCHours()
+      hourlyCounts[entryHour].visitors++
+    })
+
+    const topFlats = Object.entries(flatCounts)
+      .map(([flat, visits]) => ({ flat, visits }))
+      .sort((a, b) => b.visits - a.visits)
+      .slice(0, 10)
+
+    setChartsData({
+      trend: Object.values(trendMap),
+      topFlats,
+      hourly: hourlyCounts
+    })
+
+  }, [societyVisitors, periodDays])
+
   return (
     <div className="animate-fade-in space-y-6">
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-bold text-white">Analytics Dashboard</h2>
-        <div className="flex gap-2">
-          <select className="input-field w-auto text-xs py-2">
-            <option>Last 7 days</option>
-            <option>Last 30 days</option>
-            <option>Last 90 days</option>
-          </select>
-          <button className="btn-outline text-xs py-2 px-3">
-            <Download className="w-3.5 h-3.5" /> Export
-          </button>
+        <div className="flex gap-4 items-center">
+          <span className="text-sm font-medium text-emerald-400">{dateRangeStr}</span>
+          <div className="flex gap-2">
+            <select 
+              value={periodDays}
+              onChange={e => setPeriodDays(Number(e.target.value))}
+              className="input-field w-auto text-xs py-2"
+            >
+              <option value={7}>Last 7 days</option>
+              <option value={15}>Last 15 days</option>
+              <option value={30}>Last 30 days</option>
+            </select>
+            <button className="btn-outline text-xs py-2 px-3 flex items-center gap-1">
+              <Download className="w-3.5 h-3.5" /> Export
+            </button>
+          </div>
         </div>
       </div>
 
       {/* Weekly trend full width */}
       <div className="glass-card p-5">
-        <h3 className="text-sm font-semibold text-white mb-4">Visitor Trends (Weekly)</h3>
+        <h3 className="text-sm font-semibold text-white mb-4">Visitor Trends ({periodDays} Days)</h3>
         <ResponsiveContainer width="100%" height={300}>
-          <BarChart data={mockAnalytics.weeklyTrend}>
+          <BarChart data={chartsData.trend}>
             <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
             <XAxis dataKey="day" stroke="#64748b" fontSize={12} />
             <YAxis stroke="#64748b" fontSize={12} />
@@ -613,9 +754,9 @@ function AnalyticsSection() {
         <div className="glass-card p-5">
           <h3 className="text-sm font-semibold text-white mb-4">Top 10 Most Visited Flats</h3>
           <ResponsiveContainer width="100%" height={300}>
-            <BarChart data={mockAnalytics.topFlats} layout="vertical">
+            <BarChart data={chartsData.topFlats} layout="vertical">
               <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
-              <XAxis type="number" stroke="#64748b" fontSize={12} />
+              <XAxis type="number" stroke="#64748b" fontSize={12} allowDecimals={false} />
               <YAxis type="category" dataKey="flat" stroke="#64748b" fontSize={12} width={50} />
               <Tooltip contentStyle={{ background: '#1e293b', border: '1px solid #334155', borderRadius: '12px', fontSize: '12px' }} />
               <Bar dataKey="visits" fill="#6366f1" radius={[0, 4, 4, 0]} />
@@ -625,9 +766,9 @@ function AnalyticsSection() {
 
         {/* Hourly Distribution */}
         <div className="glass-card p-5">
-          <h3 className="text-sm font-semibold text-white mb-4">Hourly Visitor Distribution (Today)</h3>
+          <h3 className="text-sm font-semibold text-white mb-4">Hourly Visitor Distribution (Over Period)</h3>
           <ResponsiveContainer width="100%" height={300}>
-            <AreaChart data={mockAnalytics.hourlyData}>
+            <AreaChart data={chartsData.hourly}>
               <defs>
                 <linearGradient id="hourlyGrad" x1="0" y1="0" x2="0" y2="1">
                   <stop offset="5%" stopColor="#0ea5e9" stopOpacity={0.3} />
@@ -635,8 +776,8 @@ function AnalyticsSection() {
                 </linearGradient>
               </defs>
               <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
-              <XAxis dataKey="hour" stroke="#64748b" fontSize={10} interval={2} />
-              <YAxis stroke="#64748b" fontSize={12} />
+              <XAxis dataKey="hour" stroke="#64748b" fontSize={10} interval={1} />
+              <YAxis stroke="#64748b" fontSize={12} allowDecimals={false} />
               <Tooltip contentStyle={{ background: '#1e293b', border: '1px solid #334155', borderRadius: '12px', fontSize: '12px' }} />
               <Area type="monotone" dataKey="visitors" stroke="#0ea5e9" fill="url(#hourlyGrad)" strokeWidth={2} />
             </AreaChart>
@@ -647,10 +788,57 @@ function AnalyticsSection() {
   )
 }
 
-function HeatmapSection() {
-  const { heatmapData } = mockAnalytics
-  const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+function HeatmapSection({ societyVisitors }) {
+  const [heatmapData, setHeatmapData] = useState([])
+  const [peakHoursData, setPeakHoursData] = useState([])
+  const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
   const hours = Array.from({ length: 24 }, (_, i) => i)
+
+  useEffect(() => {
+    if (!societyVisitors) return
+
+    const now = new Date()
+    const aWeekAgo = new Date(now)
+    aWeekAgo.setDate(aWeekAgo.getDate() - 7)
+
+    const recentVisitors = societyVisitors.filter(v => new Date(v.entryTimestamp) > aWeekAgo)
+    
+    // Process Heatmap
+    const heatMapCounters = {}
+    // Process Peak Hours Over Last 7 days
+    const hourCounters = Array.from({ length: 24 }, (_, i) => ({ hour: i.toString().padStart(2, '0'), visitors: 0 }))
+
+    recentVisitors.forEach(v => {
+      const entryDate = new Date(v.entryTimestamp)
+      // IST adjustment roughly
+      const entryTimeIST = new Date(entryDate.getTime() + (5.5 * 60 * 60 * 1000))
+      
+      const dayName = days[entryTimeIST.getUTCDay()]
+      const hour = entryTimeIST.getUTCHours()
+
+      const key = `${dayName}-${hour}`
+      heatMapCounters[key] = (heatMapCounters[key] || 0) + 1
+      
+      hourCounters[hour].visitors++
+    })
+
+    const newHeatmapData = []
+    days.forEach(d => {
+      hours.forEach(h => {
+        newHeatmapData.push({
+          day: d,
+          hour: h,
+          value: heatMapCounters[`${d}-${h}`] || 0
+        })
+      })
+    })
+
+    setHeatmapData(newHeatmapData)
+
+    // Only show hours from 6 AM to 10 PM for Peak Hours
+    setPeakHoursData(hourCounters.filter((_, i) => i >= 6 && i <= 22))
+
+  }, [societyVisitors])
 
   const getHeatColor = (value) => {
     if (value === 0) return 'bg-slate-800/50'
@@ -719,33 +907,22 @@ function HeatmapSection() {
       </div>
 
       {/* Additional charts */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 gap-6">
         <div className="glass-card p-5">
-          <h3 className="text-sm font-semibold text-white mb-4">Peak Hours Analysis</h3>
+          <h3 className="text-sm font-semibold text-white mb-4">Peak Hours Analysis (Full Week Aggregate)</h3>
           <ResponsiveContainer width="100%" height={250}>
-            <BarChart data={mockAnalytics.hourlyData.filter((_, i) => i >= 6 && i <= 22)}>
+            <BarChart data={peakHoursData}>
               <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
               <XAxis dataKey="hour" stroke="#64748b" fontSize={10} />
-              <YAxis stroke="#64748b" fontSize={12} />
+              <YAxis stroke="#64748b" fontSize={12} allowDecimals={false} />
               <Tooltip contentStyle={{ background: '#1e293b', border: '1px solid #334155', borderRadius: '12px', fontSize: '12px' }} />
               <Bar dataKey="visitors" radius={[4, 4, 0, 0]}>
-                {mockAnalytics.hourlyData.filter((_, i) => i >= 6 && i <= 22).map((entry, i) => (
+                {peakHoursData.map((entry, i) => (
                   <Cell key={i} fill={entry.visitors > 10 ? '#ef4444' : entry.visitors > 6 ? '#f59e0b' : '#6366f1'} />
                 ))}
               </Bar>
             </BarChart>
           </ResponsiveContainer>
-        </div>
-
-        <div className="glass-card p-5">
-          <h3 className="text-sm font-semibold text-white mb-4">Geo-Tagged Entry Points</h3>
-          <div className="h-[250px] rounded-xl bg-slate-800/50 border border-slate-700 flex items-center justify-center">
-            <div className="text-center">
-              <MapPin className="w-8 h-8 text-slate-600 mx-auto mb-2" />
-              <p className="text-sm text-slate-400">Map View</p>
-              <p className="text-xs text-slate-500">Leaflet.js integration (Connect API)</p>
-            </div>
-          </div>
         </div>
       </div>
     </div>
@@ -914,7 +1091,7 @@ function VerifyResidentsSection() {
   )
 }
 
-function GuardsSection() {
+function GuardsSection({ societyVisitors }) {
   const { user } = useContext(AuthContext)
   const [guards, setGuards] = useState([])
   const [showAdd, setShowAdd] = useState(false)
@@ -1180,8 +1357,10 @@ function GuardsSection() {
             </div>
             <div className="grid grid-cols-2 gap-3 mt-4 pt-4 border-t border-slate-800/50">
               <div>
-                <p className="text-xs text-slate-500">Entries Logged (Demo)</p>
-                <p className="text-xl font-bold text-white">{Math.floor(Math.random() * 200) + 45}</p>
+                <p className="text-xs text-slate-500">Entries Logged</p>
+                <p className="text-xl font-bold text-white">
+                  {societyVisitors ? societyVisitors.filter(v => v.enteredBy === guard.uid || v.enteredBy === guard.id).length : 0}
+                </p>
               </div>
               <div>
                 <p className="text-xs text-slate-500">Status</p>

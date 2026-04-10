@@ -54,6 +54,19 @@ export const lookupVisitorProfile = async (phone) => {
 }
 
 /**
+ * Checks if a phone number belongs to a registered resident/admin of the society
+ */
+export const checkIfSocietyMember = async (societyName, phone) => {
+  const q = query(
+    collection(db, 'users'),
+    where('societyName', '==', societyName),
+    where('phoneNumber', '==', phone)
+  )
+  const snap = await getDocs(q)
+  return snap.empty ? null : snap.docs[0].data()
+}
+
+/**
  * Save a new visitor profile (first-time visitor)
  */
 export const saveVisitorProfile = async ({ phone, name, photo, societyName }) => {
@@ -92,6 +105,19 @@ export const logVisitorEntry = async ({
   }
   const docRef = await addDoc(collection(db, 'visitors'), entryData)
   return { id: docRef.id, ...entryData }
+}
+
+/**
+ * Log a pre-approved visitor entry to `visitors` collection bypassing resident approval by UPDATING the pass ID
+ */
+export const markPreApprovedVisitorInside = async (passId, enteredBy) => {
+  await updateDoc(doc(db, 'visitors', passId), {
+    status: 'inside', // Skipped pending and approved stages!
+    enteredBy,
+    date: todayIST(),  // stamp today's date so it shows in today's active visitors
+    entryTimestamp: new Date().toISOString(),
+    faceMatch: 'pre_approved'
+  })
 }
 
 /**
@@ -213,4 +239,38 @@ export const getAllVisitorsForSociety = async (societyName) => {
   return snap.docs.map(d => ({ id: d.id, ...d.data() })).sort(
     (a, b) => new Date(b.entryTimestamp) - new Date(a.entryTimestamp)
   )
+}
+
+/**
+ * Get all users with the role 'guard' for a specific society
+ */
+export const getAllGuardsForSociety = async (societyName) => {
+  const q = query(
+    collection(db, 'users'),
+    where('societyName', '==', societyName),
+    where('role', '==', 'guard')
+  )
+  const snap = await getDocs(q)
+  return snap.docs.map(doc => ({ id: doc.id, ...doc.data() }))
+}
+
+/**
+ * Pre-Approve Visitor Workflow: Create a new Pass
+ */
+export const createPreApprovedPass = async (passData) => {
+  const passRef = await addDoc(collection(db, 'visitors'), {
+    ...passData,
+    status: 'pre_approved_active', // distinguish from normal entries
+    createdAt: new Date().toISOString()
+  });
+  return passRef.id;
+}
+
+/**
+ * Pre-Approve Visitor Workflow: Fetch Pass by ID
+ */
+export const getPassById = async (passId) => {
+  const snapshot = await getDocs(query(collection(db, 'visitors'), where('__name__', '==', passId)))
+  if (snapshot.empty) return null;
+  return { id: snapshot.docs[0].id, ...snapshot.docs[0].data() }
 }
