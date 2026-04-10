@@ -35,6 +35,48 @@ export default function ResidentDashboard() {
     { id: 'settings', label: 'Settings', icon: Settings },
   ]
 
+  if (user?.status === 'pending') {
+    return (
+      <div className="min-h-screen bg-[var(--color-dark)] flex items-center justify-center p-4">
+        <div className="glass-card max-w-md w-full p-8 text-center animate-fade-in">
+          <div className="w-20 h-20 bg-amber-500/20 rounded-full flex items-center justify-center mx-auto mb-6">
+            <Clock className="w-10 h-10 text-amber-500" />
+          </div>
+          <h2 className="text-2xl font-bold text-white mb-2">Waiting for Approval</h2>
+          <p className="text-slate-400 mb-8">
+            Your account is currently pending verification from the Society Admin of <span className="font-semibold text-white">{user.societyName}</span>. 
+            You will be granted access once approved.
+          </p>
+          <button onClick={logout} className="p-3 w-full rounded-xl bg-slate-800 text-slate-300 font-semibold hover:bg-slate-700 transition-colors">
+            Logout
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  if (user?.status === 'rejected') {
+    return (
+      <div className="min-h-screen bg-[var(--color-dark)] flex items-center justify-center p-4">
+        <div className="glass-card max-w-md w-full p-8 text-center animate-fade-in border border-red-500/20">
+          <div className="w-20 h-20 bg-red-500/20 rounded-full flex items-center justify-center mx-auto mb-6">
+            <XCircle className="w-10 h-10 text-red-500" />
+          </div>
+          <h2 className="text-2xl font-bold text-white mb-2">Account Rejected</h2>
+          <p className="text-slate-400 mb-8">
+            The Society Admin of <span className="font-semibold text-white">{user.societyName}</span> has rejected your verification request.
+          </p>
+          <button onClick={logout} className="p-3 w-full rounded-xl gradient-primary text-white font-semibold shadow-lg shadow-indigo-500/25 transition-all">
+            Update Details & Reapply
+          </button>
+          <button onClick={logout} className="mt-3 p-3 w-full rounded-xl bg-slate-800 text-slate-300 font-semibold hover:bg-slate-700 transition-colors">
+            Logout
+          </button>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="min-h-screen bg-[var(--color-dark)]">
       {/* Header */}
@@ -63,7 +105,7 @@ export default function ResidentDashboard() {
             </button>
             <div className="flex items-center gap-2 pl-2 border-l border-slate-700">
               <div className="w-8 h-8 rounded-lg bg-purple-500/20 text-purple-400 flex items-center justify-center text-xs font-bold">
-                {user.avatar}
+                {user?.name?.split(' ').map(n => n.charAt(0)).join('').substring(0, 2).toUpperCase() || 'U'}
               </div>
               <button onClick={logout} className="p-2 rounded-xl text-slate-500 hover:text-red-400 transition-colors">
                 <LogOut className="w-4 h-4" />

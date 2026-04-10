@@ -65,7 +65,7 @@ export default function GuardDashboard() {
             </button>
             <div className="flex items-center gap-2 pl-2 border-l border-slate-700">
               <div className="w-8 h-8 rounded-lg bg-blue-500/20 text-blue-400 flex items-center justify-center text-xs font-bold">
-                {user.avatar}
+                {user?.name?.split(' ').map(n => n.charAt(0)).join('').substring(0, 2).toUpperCase() || 'U'}
               </div>
               <button onClick={logout} className="p-2 rounded-xl text-slate-500 hover:text-red-400 transition-colors" title="Logout">
                 <LogOut className="w-4 h-4" />

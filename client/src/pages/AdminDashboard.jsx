@@ -1,11 +1,16 @@
-import { useState, useContext } from 'react'
+import { useState, useContext, useEffect, useRef } from 'react'
 import { AuthContext } from '../App'
+import { db } from '../firebase'
+import { secondaryAuth } from '../firebase'
+import { createUserWithEmailAndPassword } from 'firebase/auth'
+import { collection, query, where, getDocs, doc, updateDoc, deleteDoc, setDoc } from 'firebase/firestore'
 import {
   Shield, LogOut, Bell, LayoutDashboard, Users, AlertTriangle,
   BarChart3, UserCog, Settings, Search, Download, CheckCircle,
   XCircle, Clock, TrendingUp, Eye, Ban, MapPin, FileText,
   ChevronRight, Filter, RefreshCw, ChevronDown, X, Activity,
-  Truck, AlertCircle, Zap, ArrowUpRight, ArrowDownRight
+  Truck, AlertCircle, Zap, ArrowUpRight, ArrowDownRight, UserPlus,
+  Trash2, Edit, UploadCloud
 } from 'lucide-react'
 import {
   mockVisitors, mockAlerts, mockAnalytics,
@@ -24,6 +29,7 @@ export default function AdminDashboard() {
 
   const navItems = [
     { id: 'overview', label: 'Overview', icon: LayoutDashboard },
+    { id: 'verify', label: 'Verify Residents', icon: CheckCircle },
     { id: 'visitors', label: 'Visitors', icon: Users },
     { id: 'alerts', label: 'Alerts', icon: AlertTriangle, badge: mockAlerts.filter(a => !a.resolved).length },
     { id: 'analytics', label: 'Analytics', icon: BarChart3 },
@@ -80,7 +86,7 @@ export default function AdminDashboard() {
         <div className="p-3 border-t border-slate-800">
           <div className="flex items-center gap-3">
             <div className="w-9 h-9 rounded-lg bg-amber-500/20 text-amber-400 flex items-center justify-center text-xs font-bold flex-shrink-0">
-              {user.avatar}
+              {user?.name?.split(' ').map(n => n.charAt(0)).join('').substring(0, 2).toUpperCase() || 'U'}
             </div>
             {sidebarOpen && (
               <div className="flex-1 min-w-0">
@@ -127,6 +133,9 @@ export default function AdminDashboard() {
         <div className="p-6 space-y-6">
           {/* OVERVIEW */}
           {activeSection === 'overview' && <OverviewSection onNavigate={setActiveSection} />}
+
+          {/* VERIFY RESIDENTS */}
+          {activeSection === 'verify' && <VerifyResidentsSection />}
 
           {/* VISITORS */}
           {activeSection === 'visitors' && <VisitorsSection />}
@@ -706,68 +715,519 @@ function HeatmapSection() {
   )
 }
 
-function GuardsSection() {
+function VerifyResidentsSection() {
+  const { user } = useContext(AuthContext)
+  const [residents, setResidents] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [filter, setFilter] = useState('All')
+  const [searchQuery, setSearchQuery] = useState('')
+  const [deleteConfirmId, setDeleteConfirmId] = useState(null)
+
+  useEffect(() => {
+    fetchResidents()
+  }, [])
+
+  const fetchResidents = async () => {
+    setLoading(true)
+    try {
+      const q = query(
+        collection(db, 'users'),
+        where('role', '==', 'resident'),
+        where('societyName', '==', user.societyName)
+      )
+      const snapshot = await getDocs(q)
+      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }))
+      setResidents(data)
+    } catch (err) {
+      console.error(err)
+      if (err.message.includes('permission') || err.message.includes('Missing or insufficient')) {
+        alert("Firestore Permission Denied!\n\nPlease update your Firestore Security Rules to allow Admins to read the users collection:\n\nmatch /users/{userId} {\n  allow read: if request.auth != null;\n  allow write: if request.auth.uid == userId || get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';\n}")
+      }
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleUpdateStatus = async (id, newStatus) => {
+    try {
+      await updateDoc(doc(db, 'users', id), { status: newStatus })
+      fetchResidents()
+    } catch (err) {
+      console.error(err)
+    }
+  }
+
+  const handleDelete = (id) => {
+    setDeleteConfirmId(id)
+  }
+
+  const confirmDelete = async () => {
+    if (!deleteConfirmId) return
+    try {
+      await deleteDoc(doc(db, 'users', deleteConfirmId))
+      fetchResidents()
+    } catch (err) {
+      console.error(err)
+    } finally {
+      setDeleteConfirmId(null)
+    }
+  }
+
+  const filteredResidents = residents.filter(r => {
+    const matchesFilter = filter === 'All' ? true : r.status?.toLowerCase() === filter.toLowerCase()
+    const matchesSearch = r.name?.toLowerCase().includes(searchQuery.toLowerCase()) || r.flatGate?.toLowerCase().includes(searchQuery.toLowerCase())
+    return matchesFilter && matchesSearch
+  })
+
+  const counts = {
+    total: residents.length,
+    approved: residents.filter(r => r.status === 'approved').length,
+    pending: residents.filter(r => r.status === 'pending').length,
+    rejected: residents.filter(r => r.status === 'rejected').length
+  }
+
   return (
     <div className="animate-fade-in space-y-4">
-      <h2 className="text-lg font-bold text-white">Guard Management</h2>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {mockAnalytics.guardActivity.map((guard, i) => (
-          <div key={i} className="glass-card p-5">
-            <div className="flex items-start justify-between">
-              <div className="flex items-center gap-3">
-                <div className={`w-12 h-12 rounded-xl ${guard.status === 'active' ? 'bg-green-500/15' : 'bg-slate-800'} flex items-center justify-center`}>
-                  <UserCog className={`w-6 h-6 ${guard.status === 'active' ? 'text-green-400' : 'text-slate-500'}`} />
-                </div>
-                <div>
-                  <p className="text-sm font-semibold text-white">{guard.guard}</p>
-                  <p className="text-xs text-slate-500">{guard.gate}</p>
+      <h2 className="text-lg font-bold text-white">Verify Residents</h2>
+      
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+        {[{ label: 'Total', value: counts.total, color: 'blue' },
+          { label: 'Pending', value: counts.pending, color: 'amber' },
+          { label: 'Approved', value: counts.approved, color: 'green' },
+          { label: 'Rejected', value: counts.rejected, color: 'red' }
+        ].map((c, i) => (
+          <div key={i} className={`glass-card p-4 border-${c.color}-500/20`}>
+            <p className={`text-2xl font-bold text-${c.color}-400`}>{c.value}</p>
+            <p className="text-xs text-slate-500 uppercase tracking-wide">{c.label}</p>
+          </div>
+        ))}
+      </div>
+
+      <div className="flex flex-col md:flex-row justify-between gap-4">
+        <div className="flex gap-2 bg-slate-800/40 p-1 rounded-xl">
+          {['All', 'Pending', 'Approved', 'Rejected'].map(f => (
+             <button key={f} onClick={() => setFilter(f)} className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+               filter === f ? 'bg-indigo-500 text-white shadow-lg' : 'text-slate-400 hover:text-white'
+             }`}>{f}</button>
+          ))}
+        </div>
+        <div className="relative w-full md:w-64">
+           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+           <input type="text" placeholder="Search by name or flat..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} className="input-field pl-10 h-full py-2" />
+        </div>
+      </div>
+
+      <div className="space-y-3">
+        {loading ? <p className="text-slate-500 p-4 text-center">Loading residents...</p> : 
+         filteredResidents.length === 0 ? <p className="text-slate-500 p-4 text-center bg-slate-800/20 rounded-xl border border-dashed border-slate-700">No results found.</p> :
+         filteredResidents.map(res => (
+          <div key={res.id} className="glass-card p-4 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+            <div className="flex gap-4">
+              <div className="w-12 h-12 rounded-xl bg-slate-800 border border-slate-700 flex items-center justify-center font-bold text-slate-400">
+                {res.name?.charAt(0) || 'U'}
+              </div>
+              <div>
+                <p className="font-medium text-white">{res.name}</p>
+                <div className="flex items-center gap-3 mt-1">
+                  <span className="text-xs text-slate-400"><span className="text-slate-500">Flat:</span> {res.flatGate}</span>
+                  <span className="text-xs text-slate-400"><span className="text-slate-500">Phone:</span> {res.phoneNumber}</span>
                 </div>
               </div>
-              <span className={`badge ${guard.status === 'active' ? 'badge-success' : 'badge-neutral'}`}>
-                {guard.status === 'active' && <div className="w-1.5 h-1.5 rounded-full bg-green-400 pulse-dot" />}
-                {guard.status}
-              </span>
             </div>
-            <div className="grid grid-cols-2 gap-3 mt-4">
-              <div>
-                <p className="text-xs text-slate-500">Entries Logged</p>
-                <p className="text-xl font-bold text-white">{guard.entriesLogged}</p>
-              </div>
-              <div>
-                <p className="text-xs text-slate-500">Current Shift</p>
-                <p className="text-sm font-medium text-white">{guard.shift}</p>
-              </div>
+            
+            <div className="flex items-center gap-2">
+              <span className={`badge ${res.status === 'approved' ? 'badge-success' : res.status === 'rejected' ? 'badge-danger' : 'badge-warning'}`}>
+                {res.status || 'pending'}
+              </span>
+              
+              {res.status !== 'approved' && (
+                <button onClick={() => handleUpdateStatus(res.id, 'approved')} className="p-2 bg-green-500/10 text-green-400 rounded-lg hover:bg-green-500/20" title="Approve">
+                  <CheckCircle className="w-4 h-4" />
+                </button>
+              )}
+              {res.status !== 'rejected' && (
+                <button onClick={() => handleUpdateStatus(res.id, 'rejected')} className="p-2 bg-red-500/10 text-red-400 rounded-lg hover:bg-red-500/20" title="Reject">
+                  <XCircle className="w-4 h-4" />
+                </button>
+              )}
+              <button onClick={() => handleDelete(res.id)} className="p-2 bg-slate-800 text-slate-400 rounded-lg hover:text-red-400" title="Delete">
+                <Trash2 className="w-4 h-4" />
+              </button>
             </div>
           </div>
         ))}
       </div>
+
+      {deleteConfirmId && (
+        <div className="fixed inset-0 z-[100] bg-black/60 flex items-center justify-center p-4">
+          <div className="glass-card max-w-sm w-full p-6 text-center animate-fade-in border border-red-500/30">
+            <div className="w-16 h-16 bg-red-500/20 rounded-full flex items-center justify-center mx-auto mb-4">
+              <Trash2 className="w-8 h-8 text-red-500" />
+            </div>
+            <h3 className="text-xl font-bold text-white mb-2">Delete Resident?</h3>
+            <p className="text-slate-400 mb-6 text-sm">Do you really want to permanently delete this user? This action cannot be undone.</p>
+            <div className="flex gap-3">
+              <button onClick={() => setDeleteConfirmId(null)} className="btn-outline flex-1">Cancel</button>
+              <button onClick={confirmDelete} className="btn-danger flex-1">Delete</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function GuardsSection() {
+  const { user } = useContext(AuthContext)
+  const [guards, setGuards] = useState([])
+  const [showAdd, setShowAdd] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [deleteConfirmId, setDeleteConfirmId] = useState(null)
+  const [editGuardId, setEditGuardId] = useState(null)
+  
+  const [formData, setFormData] = useState({
+    name: '', email: '', password: '', phone: '', shift: '', gate: '', photo: ''
+  })
+  
+  const fileInputRef = useRef(null)
+
+  useEffect(() => {
+    fetchGuards()
+  }, [])
+
+  const fetchGuards = async () => {
+    try {
+      const q = query(collection(db, 'users'), where('role', '==', 'guard'), where('societyName', '==', user.societyName))
+      const snapshot = await getDocs(q)
+      setGuards(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })))
+    } catch(err) {
+      console.error(err)
+    }
+  }
+
+  const handleImageDrop = (e) => {
+    e.preventDefault()
+    const file = e.dataTransfer ? e.dataTransfer.files[0] : e.target.files[0]
+    if (!file) return
+    
+    // Convert to base64 with canvas compression
+    const reader = new FileReader()
+    reader.onload = (event) => {
+      const img = new Image()
+      img.onload = () => {
+        const canvas = document.createElement('canvas')
+        const MAX_WIDTH = 400
+        const scaleSize = MAX_WIDTH / img.width
+        canvas.width = MAX_WIDTH
+        canvas.height = img.height * scaleSize
+        const ctx = canvas.getContext('2d')
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
+        const base64 = canvas.toDataURL('image/jpeg', 0.8)
+        setFormData(prev => ({ ...prev, photo: base64 }))
+      }
+      img.src = event.target.result
+    }
+    reader.readAsDataURL(file)
+  }
+
+  const handleCreateGuard = async (e) => {
+    e.preventDefault()
+    setLoading(true)
+    try {
+      if (editGuardId) {
+        await updateDoc(doc(db, 'users', editGuardId), {
+          name: formData.name,
+          phoneNumber: formData.phone,
+          flatGate: formData.gate,
+          shift: formData.shift,
+          photo: formData.photo
+        })
+      } else {
+        const credential = await createUserWithEmailAndPassword(secondaryAuth, formData.email, formData.password)
+        
+        const newGuard = {
+          uid: credential.user.uid,
+          name: formData.name,
+          email: formData.email,
+          role: 'guard',
+          phoneNumber: formData.phone,
+          societyName: user.societyName,
+          flatGate: formData.gate,
+          shift: formData.shift,
+          photo: formData.photo,
+          status: 'approved',
+          createdAt: new Date().toISOString()
+        }
+        
+        await setDoc(doc(db, 'users', credential.user.uid), newGuard)
+      }
+      setShowAdd(false)
+      setEditGuardId(null)
+      setFormData({ name: '', email: '', password: '', phone: '', shift: '', gate: '', photo: '' })
+      fetchGuards()
+    } catch(err) {
+      alert("Error: " + err.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleDeleteGuard = (id) => {
+    setDeleteConfirmId(id)
+  }
+  
+  const confirmDeleteGuard = async () => {
+    if (!deleteConfirmId) return
+    try {
+      await deleteDoc(doc(db, 'users', deleteConfirmId))
+      fetchGuards()
+    } catch(e) {
+      console.error(e)
+    } finally {
+      setDeleteConfirmId(null)
+    }
+  }
+
+  const handleEditGuard = (guard) => {
+    setFormData({
+      name: guard.name || '',
+      email: guard.email || '',
+      password: '',
+      phone: guard.phoneNumber || '',
+      shift: guard.shift || '',
+      gate: guard.flatGate || guard.gate || '',
+      photo: guard.photo || ''
+    })
+    setEditGuardId(guard.id)
+    setShowAdd(true)
+  }
+
+  const filteredGuards = guards.filter(g => g.name?.toLowerCase().includes(searchQuery.toLowerCase()) || g.flatGate?.toLowerCase().includes(searchQuery.toLowerCase()))
+
+  return (
+    <div className="animate-fade-in space-y-4">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <h2 className="text-lg font-bold text-white flex-shrink-0">Guard Management</h2>
+        <div className="flex w-full md:w-auto items-center gap-3">
+          <div className="relative w-full md:w-64">
+             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+             <input type="text" placeholder="Search by name or gate..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} className="input-field pl-10 h-full py-2" />
+          </div>
+          <button onClick={() => { setShowAdd(!showAdd); setEditGuardId(null); setFormData({ name: '', email: '', password: '', phone: '', shift: '', gate: '', photo: '' }) }} className="btn-primary py-2 px-4 shadow-lg shadow-indigo-500/25 flex-shrink-0">
+            {showAdd ? <X className="w-4 h-4" /> : <UserPlus className="w-4 h-4" />}
+            {showAdd ? 'Cancel' : 'Add Guard'}
+          </button>
+        </div>
+      </div>
+
+      {showAdd && (
+        <div className="glass-card p-6 mb-6 animate-fade-in border border-indigo-500/30">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-sm font-semibold text-white">
+              {editGuardId ? 'Edit Guard Profile' : 'Create Guard Profile'}
+            </h3>
+            {editGuardId && <span className="badge badge-warning text-[10px]">Editing Mode</span>}
+          </div>
+          <form onSubmit={handleCreateGuard} className="space-y-4">
+            
+            <div className="flex flex-col md:flex-row gap-6">
+              {/* Image Uploader */}
+              <div 
+                className="w-full md:w-1/3 aspect-square max-h-[250px] bg-slate-800/50 border-2 border-dashed border-slate-700 hover:border-indigo-500 rounded-xl flex flex-col items-center justify-center cursor-pointer transition-colors overflow-hidden"
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={handleImageDrop}
+                onClick={() => fileInputRef.current.click()}
+              >
+                {formData.photo ? (
+                  <img src={formData.photo} alt="Guard" className="w-full h-full object-cover" />
+                ) : (
+                  <>
+                    <UploadCloud className="w-8 h-8 text-slate-500 mb-2" />
+                    <p className="text-xs text-slate-400 text-center px-4">Click or Drag & Drop Photo</p>
+                  </>
+                )}
+                <input type="file" hidden ref={fileInputRef} onChange={handleImageDrop} accept="image/*" />
+              </div>
+
+              {/* Form Fields */}
+              <div className="flex-1 space-y-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs text-slate-400 mb-1">Full Name</label>
+                    <input type="text" required className="input-field py-2 text-sm" value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-slate-400 mb-1">Phone Number</label>
+                    <input type="tel" required className="input-field py-2 text-sm" value={formData.phone} onChange={e => setFormData({...formData, phone: e.target.value})} />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-slate-400 mb-1">Email (For Login)</label>
+                    <input type="email" required={!editGuardId} disabled={!!editGuardId} className={`input-field py-2 text-sm ${editGuardId ? 'opacity-50 cursor-not-allowed' : ''}`} value={formData.email} onChange={e => setFormData({...formData, email: e.target.value})} />
+                  </div>
+                  {!editGuardId && (
+                    <div>
+                      <label className="block text-xs text-slate-400 mb-1">Password</label>
+                      <input type="password" required minLength="6" className="input-field py-2 text-sm" value={formData.password} onChange={e => setFormData({...formData, password: e.target.value})} />
+                    </div>
+                  )}
+                  <div>
+                    <label className="block text-xs text-slate-400 mb-1">Gate / Post</label>
+                    <input type="text" required placeholder="e.g. Main Gate" className="input-field py-2 text-sm" value={formData.gate} onChange={e => setFormData({...formData, gate: e.target.value})} />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-slate-400 mb-1">Shift Details</label>
+                    <input type="text" required placeholder="e.g. 08:00 AM - 08:00 PM" className="input-field py-2 text-sm" value={formData.shift} onChange={e => setFormData({...formData, shift: e.target.value})} />
+                  </div>
+                </div>
+              </div>
+            </div>
+            
+            <div className="flex justify-end pt-4">
+              <button disabled={loading} type="submit" className="btn-primary py-2 px-6">
+                {loading ? 'Saving...' : editGuardId ? 'Save Changes' : 'Create Guard Account'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {filteredGuards.length === 0 ? (
+        <p className="text-slate-500 p-4 text-center bg-slate-800/20 rounded-xl border border-dashed border-slate-700">No results found.</p>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {filteredGuards.map((guard, i) => (
+            <div key={guard.id || i} className="glass-card p-5 relative overflow-hidden group">
+              <div className="absolute top-3 right-3 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                 <button onClick={() => handleEditGuard(guard)} className="p-1.5 bg-slate-800 text-slate-400 rounded-lg hover:text-indigo-400"><Edit className="w-4 h-4" /></button>
+                 <button onClick={() => handleDeleteGuard(guard.id)} className="p-1.5 bg-slate-800 text-slate-400 rounded-lg hover:text-red-400"><Trash2 className="w-4 h-4" /></button>
+              </div>
+            
+            <div className="flex items-start gap-4">
+              <div className="w-16 h-16 rounded-xl bg-slate-800 flex items-center justify-center overflow-hidden border border-slate-700">
+                {guard.photo ? (
+                  <img src={guard.photo} alt={guard.name} className="w-full h-full object-cover" />
+                ) : (
+                  <UserCog className="w-8 h-8 text-slate-500" />
+                )}
+              </div>
+              <div className="flex-1">
+                <div className="flex justify-between items-start">
+                  <div>
+                    <p className="text-base font-semibold text-white">{guard.name}</p>
+                    <p className="text-xs text-slate-400 mt-0.5"><span className="text-slate-500">Gate:</span> {guard.flatGate || guard.gate}</p>
+                  </div>
+                </div>
+                <div className="mt-3 text-xs text-slate-400 flex flex-col gap-1">
+                   <p><span className="text-slate-500">Email:</span> {guard.email}</p>
+                   <p><span className="text-slate-500">Phone:</span> {guard.phoneNumber}</p>
+                   <p><span className="text-slate-500">Shift:</span> {guard.shift}</p>
+                </div>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3 mt-4 pt-4 border-t border-slate-800/50">
+              <div>
+                <p className="text-xs text-slate-500">Entries Logged (Demo)</p>
+                <p className="text-xl font-bold text-white">{Math.floor(Math.random() * 200) + 45}</p>
+              </div>
+              <div>
+                <p className="text-xs text-slate-500">Status</p>
+                <div className="flex items-center gap-1.5 mt-1">
+                  <div className="w-2 h-2 rounded-full bg-green-400 pulse-dot" />
+                  <p className="text-sm font-medium text-white">Active</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        ))}
+        </div>
+      )}
+
+      {deleteConfirmId && (
+        <div className="fixed inset-0 z-[100] bg-black/60 flex items-center justify-center p-4">
+          <div className="glass-card max-w-sm w-full p-6 text-center animate-fade-in border border-red-500/30">
+            <div className="w-16 h-16 bg-red-500/20 rounded-full flex items-center justify-center mx-auto mb-4">
+              <Trash2 className="w-8 h-8 text-red-500" />
+            </div>
+            <h3 className="text-xl font-bold text-white mb-2">Delete Guard?</h3>
+            <p className="text-slate-400 mb-6 text-sm">Do you really want to permanently eliminate this guard profile? This action cannot be undone.</p>
+            <div className="flex gap-3">
+              <button onClick={() => setDeleteConfirmId(null)} className="btn-outline flex-1">Cancel</button>
+              <button onClick={confirmDeleteGuard} className="btn-danger flex-1">Delete</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
 
 function SettingsSection() {
+  const { user, setUser } = useContext(AuthContext)
+  const [loading, setLoading] = useState(false)
+  const [profileData, setProfileData] = useState({
+    name: user.name || '',
+    email: user.email || '',
+    phoneNumber: user.phoneNumber || '',
+    flatGate: user.flatGate || ''
+  })
+
+  const handleProfileUpdate = async (e) => {
+    e.preventDefault()
+    setLoading(true)
+    try {
+      await updateDoc(doc(db, 'users', user.uid), profileData)
+      setUser({ ...user, ...profileData })
+      alert("Profile updated successfully")
+    } catch(err) {
+      console.error(err)
+      alert("Failed to update profile")
+    } finally {
+      setLoading(false)
+    }
+  }
+
   return (
     <div className="animate-fade-in space-y-6">
-      <h2 className="text-lg font-bold text-white">Society Settings</h2>
+      <h2 className="text-lg font-bold text-white">Admin Settings</h2>
+
+      <div className="glass-card p-5 space-y-4 border border-indigo-500/20">
+        <h3 className="text-sm font-semibold text-indigo-400">Your Profile (Admin)</h3>
+        <form onSubmit={handleProfileUpdate} className="space-y-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm text-slate-400 mb-1.5">Full Name</label>
+              <input type="text" value={profileData.name} onChange={(e) => setProfileData({...profileData, name: e.target.value})} className="input-field" required />
+            </div>
+            <div>
+              <label className="block text-sm text-slate-400 mb-1.5">Email Address</label>
+              <input type="email" value={profileData.email} disabled className="input-field opacity-50 cursor-not-allowed" />
+            </div>
+            <div>
+              <label className="block text-sm text-slate-400 mb-1.5">Phone Number</label>
+              <input type="tel" value={profileData.phoneNumber} onChange={(e) => setProfileData({...profileData, phoneNumber: e.target.value})} className="input-field" required />
+            </div>
+            <div>
+              <label className="block text-sm text-slate-400 mb-1.5">Flat Number</label>
+              <input type="text" value={profileData.flatGate} onChange={(e) => setProfileData({...profileData, flatGate: e.target.value})} className="input-field" required />
+            </div>
+          </div>
+          <button type="submit" disabled={loading} className="btn-primary">
+            {loading ? 'Saving...' : 'Update Profile'}
+          </button>
+        </form>
+      </div>
 
       <div className="glass-card p-5 space-y-4">
         <h3 className="text-sm font-semibold text-white">Society Details</h3>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
             <label className="block text-sm text-slate-400 mb-1.5">Society Name</label>
-            <input type="text" defaultValue="Green Valley Apartments" className="input-field" />
+            <input type="text" defaultValue={user.societyName || "Green Valley Apartments"} disabled className="input-field opacity-50 cursor-not-allowed" />
           </div>
           <div>
             <label className="block text-sm text-slate-400 mb-1.5">Address</label>
             <input type="text" defaultValue="Sector 42, Noida, UP" className="input-field" />
-          </div>
-          <div>
-            <label className="block text-sm text-slate-400 mb-1.5">Total Flats</label>
-            <input type="number" defaultValue="240" className="input-field" />
-          </div>
-          <div>
-            <label className="block text-sm text-slate-400 mb-1.5">Number of Gates</label>
-            <input type="number" defaultValue="3" className="input-field" />
           </div>
         </div>
       </div>
@@ -792,47 +1252,7 @@ function SettingsSection() {
           ))}
         </div>
       </div>
-
-      <div className="glass-card p-5 space-y-4">
-        <h3 className="text-sm font-semibold text-white">API Integrations</h3>
-        <div className="space-y-3">
-          <div>
-            <label className="block text-sm text-slate-400 mb-1.5">Cloudinary API Key</label>
-            <input type="password" defaultValue="ck_••••••••••" className="input-field" />
-          </div>
-          <div>
-            <label className="block text-sm text-slate-400 mb-1.5">WhatsApp Cloud API Token</label>
-            <input type="password" defaultValue="wa_••••••••••" className="input-field" />
-          </div>
-          <div>
-            <label className="block text-sm text-slate-400 mb-1.5">Claude API Key (for AI Risk Assessment)</label>
-            <input type="password" defaultValue="sk-••••••••••" className="input-field" />
-          </div>
-          <div>
-            <label className="block text-sm text-slate-400 mb-1.5">Numverify API Key (Phone Validation)</label>
-            <input type="password" defaultValue="nv_••••••••••" className="input-field" />
-          </div>
-        </div>
-      </div>
-
-      <div className="glass-card p-5 space-y-4">
-        <h3 className="text-sm font-semibold text-white">Society-Wide Blocklist</h3>
-        <div className="space-y-2">
-          {[
-            { phone: '+919333222111', name: 'Suspicious Person', reportedBy: 'Flat A-302' },
-          ].map((item, i) => (
-            <div key={i} className="flex items-center justify-between p-3 rounded-xl bg-red-500/5 border border-red-500/15">
-              <div>
-                <p className="text-sm text-white">{item.name}</p>
-                <p className="text-xs text-slate-500">{item.phone} • Reported by {item.reportedBy}</p>
-              </div>
-              <button className="text-xs text-red-400 hover:text-red-300">Remove</button>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      <button className="btn-primary">Save All Settings</button>
     </div>
   )
 }
+

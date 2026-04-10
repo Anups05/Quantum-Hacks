@@ -1,37 +1,102 @@
-import { useContext, useState } from 'react'
-import { AuthContext } from '../App'
+import { useState } from 'react'
 import { Shield, Eye, UserCheck, Lock, Mail, User, Building, Phone, ChevronRight } from 'lucide-react'
+import { auth, db, googleProvider } from '../firebase'
+import { signInWithEmailAndPassword, createUserWithEmailAndPassword, signInWithPopup } from 'firebase/auth'
+import { doc, setDoc } from 'firebase/firestore'
 
 export default function Login() {
-  const { login } = useContext(AuthContext)
   const [isRegister, setIsRegister] = useState(false)
   const [selectedRole, setSelectedRole] = useState(null)
+  const [loading, setLoading] = useState(false)
+  const [errorMsg, setErrorMsg] = useState('')
+
+  const [formData, setFormData] = useState({
+    name: '',
+    email: '',
+    password: '',
+    phoneNumber: '+91 ',
+    societyName: '',
+    flatGate: ''
+  })
+
 
   const roles = [
     {
       id: 'guard', label: 'Security Guard', icon: Shield,
-      desc: 'Log visitors, scan QR codes, manage entry/exit',
+      desc: 'Log visitors',
       color: 'from-blue-500 to-cyan-500', bgGlow: 'rgba(14, 165, 233, 0.15)',
     },
     {
       id: 'resident', label: 'Resident', icon: UserCheck,
-      desc: 'Approve visitors, manage passes, view history',
+      desc: 'Approve visitors',
       color: 'from-indigo-500 to-purple-500', bgGlow: 'rgba(99, 102, 241, 0.15)',
     },
     {
       id: 'admin', label: 'Society Admin', icon: Eye,
-      desc: 'Analytics, alerts, security oversight',
+      desc: 'Analytics, alerts',
       color: 'from-amber-500 to-orange-500', bgGlow: 'rgba(245, 158, 11, 0.15)',
     },
   ]
 
-  const handleLogin = (e) => {
+  const handleChange = (e) => {
+    setFormData({ ...formData, [e.target.name]: e.target.value })
+  }
+
+  const handleLogin = async (e) => {
     e.preventDefault()
-    if (selectedRole) login(selectedRole)
+    if (isRegister && !selectedRole) {
+      setErrorMsg('Please select a role to register.')
+      return
+    }
+
+    setLoading(true)
+    setErrorMsg('')
+    try {
+      if (isRegister) {
+        // Register flow
+        const userCredential = await createUserWithEmailAndPassword(auth, formData.email, formData.password)
+        const user = userCredential.user
+        
+        const status = selectedRole === 'admin' ? 'approved' : 'pending'
+
+        // Save extra data to Firestore
+        await setDoc(doc(db, 'users', user.uid), {
+          uid: user.uid,
+          name: formData.name,
+          email: formData.email,
+          role: selectedRole,
+          phoneNumber: formData.phoneNumber,
+          societyName: formData.societyName,
+          flatGate: formData.flatGate,
+          status: status,
+          createdAt: new Date().toISOString()
+        })
+      } else {
+        // Login flow
+        await signInWithEmailAndPassword(auth, formData.email, formData.password)
+      }
+    } catch (error) {
+      setErrorMsg(error.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleGoogleLogin = async () => {
+    setLoading(true)
+    setErrorMsg('')
+    try {
+      await signInWithPopup(auth, googleProvider)
+      // Rest of the flow (redirecting to complete profile if necessary) is handled by App.jsx
+    } catch (error) {
+      setErrorMsg(error.message)
+    } finally {
+      setLoading(false)
+    }
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center p-4 relative overflow-hidden">
+    <div className="min-h-screen flex items-center justify-center p-4 relative overflow-hidden py-12">
       {/* Animated background */}
       <div className="absolute inset-0 overflow-hidden">
         <div className="absolute -top-40 -right-40 w-80 h-80 rounded-full bg-indigo-500/10 blur-3xl" />
@@ -58,13 +123,19 @@ export default function Login() {
             {isRegister ? 'Create Account' : 'Sign In'}
           </h2>
 
+          {errorMsg && (
+            <div className="bg-red-500/10 border border-red-500/50 text-red-500 text-sm p-3 rounded-lg mb-4">
+              {errorMsg}
+            </div>
+          )}
+
           <form onSubmit={handleLogin} className="space-y-4">
             {isRegister && (
               <div>
                 <label className="block text-sm text-slate-400 mb-1.5">Full Name</label>
                 <div className="relative">
                   <User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
-                  <input type="text" placeholder="Enter your name" className="input-field pl-10" />
+                  <input type="text" name="name" required placeholder="Enter your name" className="input-field pl-10" value={formData.name} onChange={handleChange} />
                 </div>
               </div>
             )}
@@ -73,7 +144,7 @@ export default function Login() {
               <label className="block text-sm text-slate-400 mb-1.5">Email Address</label>
               <div className="relative">
                 <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
-                <input type="email" placeholder="you@society.com" className="input-field pl-10" defaultValue="guard@society.com" />
+                <input type="email" name="email" required placeholder="you@society.com" className="input-field pl-10" value={formData.email} onChange={handleChange} />
               </div>
             </div>
 
@@ -81,7 +152,7 @@ export default function Login() {
               <label className="block text-sm text-slate-400 mb-1.5">Password</label>
               <div className="relative">
                 <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
-                <input type="password" placeholder="••••••••" className="input-field pl-10" defaultValue="password" />
+                <input type="password" name="password" required placeholder="••••••••" className="input-field pl-10" value={formData.password} onChange={handleChange} />
               </div>
             </div>
 
@@ -91,83 +162,102 @@ export default function Login() {
                   <label className="block text-sm text-slate-400 mb-1.5">Phone Number</label>
                   <div className="relative">
                     <Phone className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
-                    <input type="tel" placeholder="+91 98765 43210" className="input-field pl-10" />
+                    <input type="tel" name="phoneNumber" required placeholder="+91 98765 43210" className="input-field pl-10" value={formData.phoneNumber} onChange={handleChange} />
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-sm text-slate-400 mb-1.5">Society/Building/Complex Name</label>
+                  <div className="relative">
+                    <Building className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+                    <input type="text" name="societyName" required placeholder="e.g. Green Valley Apts" className="input-field pl-10" value={formData.societyName} onChange={handleChange} />
                   </div>
                 </div>
                 <div>
                   <label className="block text-sm text-slate-400 mb-1.5">Flat / Gate (if applicable)</label>
                   <div className="relative">
                     <Building className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
-                    <input type="text" placeholder="e.g. A-302 or Main Gate" className="input-field pl-10" />
+                    <input type="text" name="flatGate" required placeholder="e.g. A-302 or Main Gate" className="input-field pl-10" value={formData.flatGate} onChange={handleChange} />
+                  </div>
+                </div>
+                
+                {/* Role Selection */}
+                <div>
+                  <label className="block text-sm text-slate-400 mb-2">Select Role</label>
+                  <div className="space-y-2">
+                    {roles.map((role) => {
+                      const Icon = role.icon
+                      const isSelected = selectedRole === role.id
+                      return (
+                        <button
+                          key={role.id}
+                          type="button"
+                          onClick={() => setSelectedRole(role.id)}
+                          className={`w-full flex items-center gap-3 p-3 rounded-xl border transition-all duration-300 text-left ${
+                            isSelected
+                              ? 'border-indigo-500/50 bg-indigo-500/10'
+                              : 'border-slate-700/50 bg-slate-800/30 hover:border-slate-600'
+                          }`}
+                        >
+                          <div className={`w-10 h-10 rounded-lg bg-gradient-to-br ${role.color} flex items-center justify-center flex-shrink-0`}>
+                            <Icon className="w-5 h-5 text-white" />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-medium text-white">{role.label}</p>
+                            <p className="text-xs text-slate-500 truncate">{role.desc}</p>
+                          </div>
+                          <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all ${
+                            isSelected ? 'border-indigo-500 bg-indigo-500' : 'border-slate-600'
+                          }`}>
+                            {isSelected && <div className="w-2 h-2 rounded-full bg-white" />}
+                          </div>
+                        </button>
+                      )
+                    })}
                   </div>
                 </div>
               </>
             )}
 
-            {/* Role Selection */}
-            <div>
-              <label className="block text-sm text-slate-400 mb-2">Select Role</label>
-              <div className="space-y-2">
-                {roles.map((role) => {
-                  const Icon = role.icon
-                  const isSelected = selectedRole === role.id
-                  return (
-                    <button
-                      key={role.id}
-                      type="button"
-                      onClick={() => setSelectedRole(role.id)}
-                      className={`w-full flex items-center gap-3 p-3 rounded-xl border transition-all duration-300 text-left ${
-                        isSelected
-                          ? 'border-indigo-500/50 bg-indigo-500/10'
-                          : 'border-slate-700/50 bg-slate-800/30 hover:border-slate-600'
-                      }`}
-                    >
-                      <div className={`w-10 h-10 rounded-lg bg-gradient-to-br ${role.color} flex items-center justify-center flex-shrink-0`}>
-                        <Icon className="w-5 h-5 text-white" />
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium text-white">{role.label}</p>
-                        <p className="text-xs text-slate-500 truncate">{role.desc}</p>
-                      </div>
-                      <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all ${
-                        isSelected ? 'border-indigo-500 bg-indigo-500' : 'border-slate-600'
-                      }`}>
-                        {isSelected && <div className="w-2 h-2 rounded-full bg-white" />}
-                      </div>
-                    </button>
-                  )
-                })}
-              </div>
-            </div>
-
             <button
               type="submit"
-              disabled={!selectedRole}
-              className={`w-full py-3 rounded-xl font-semibold text-white flex items-center justify-center gap-2 transition-all duration-300 ${
-                selectedRole
+              disabled={loading || (isRegister && !selectedRole)}
+              className={`w-full py-3 mt-4 rounded-xl font-semibold text-white flex items-center justify-center gap-2 transition-all duration-300 ${
+                !loading && (!isRegister || selectedRole)
                   ? 'gradient-primary hover:shadow-lg hover:shadow-indigo-500/25 cursor-pointer'
                   : 'bg-slate-700 text-slate-400 cursor-not-allowed'
               }`}
             >
-              {isRegister ? 'Create Account' : 'Sign In'}
-              <ChevronRight className="w-4 h-4" />
+              {loading ? 'Processing...' : (isRegister ? 'Create Account' : 'Sign In')}
+              {!loading && <ChevronRight className="w-4 h-4" />}
             </button>
           </form>
 
+          <div className="mt-4 flex items-center justify-center space-x-2">
+            <span className="h-px bg-slate-700 w-full"></span>
+            <span className="text-slate-500 text-xs uppercase">or</span>
+            <span className="h-px bg-slate-700 w-full"></span>
+          </div>
+
+          <button
+            onClick={handleGoogleLogin}
+            disabled={loading}
+            className="w-full mt-4 py-3 rounded-xl font-semibold text-slate-300 bg-slate-800 border border-slate-700 hover:bg-slate-700 hover:text-white flex items-center justify-center gap-2 transition-all duration-300"
+          >
+            <svg className="w-5 h-5" viewBox="0 0 24 24">
+              <path fill="currentColor" d="M12.545,10.239v3.821h5.445c-0.712,2.315-2.647,3.972-5.445,3.972c-3.332,0-6.033-2.701-6.033-6.032s2.701-6.032,6.033-6.032c1.498,0,2.866,0.549,3.921,1.453l2.814-2.814C17.503,2.988,15.139,2,12.545,2C7.021,2,2.543,6.477,2.543,12s4.478,10,10.002,10c8.396,0,10.249-7.85,9.426-11.748L12.545,10.239z"/>
+            </svg>
+            Continue with Google
+          </button>
+
           <div className="mt-6 text-center">
             <button
-              onClick={() => setIsRegister(!isRegister)}
+              onClick={() => { setIsRegister(!isRegister); setErrorMsg(''); }}
               className="text-sm text-indigo-400 hover:text-indigo-300 transition-colors"
             >
               {isRegister ? 'Already have an account? Sign In' : "Don't have an account? Register"}
             </button>
           </div>
         </div>
-
-        {/* Demo hint */}
-        <p className="text-center text-xs text-slate-600 mt-4">
-          Demo: Select any role and click Sign In
-        </p>
       </div>
     </div>
   )
