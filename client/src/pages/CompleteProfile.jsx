@@ -4,6 +4,7 @@ import { Shield, Building, Phone, ChevronRight, UserCheck, Eye } from 'lucide-re
 import { auth, db } from '../firebase'
 import { doc, setDoc } from 'firebase/firestore'
 import { AuthContext } from '../App'
+import { validatePhoneFormat, checkPhoneUnique } from '../utils/phoneValidation'
 
 export default function CompleteProfile() {
   const { user, setUser } = useContext(AuthContext)
@@ -49,6 +50,15 @@ export default function CompleteProfile() {
     setLoading(true)
 
     try {
+      if (!validatePhoneFormat(formData.phoneNumber)) {
+        throw new Error('Phone number must be +91 followed by 10 digits.')
+      }
+      
+      const isUnique = await checkPhoneUnique(formData.phoneNumber, user.uid)
+      if (!isUnique) {
+        throw new Error('This phone number is already registered to another account.')
+      }
+
       const status = selectedRole === 'admin' ? 'approved' : 'pending'
 
       const userData = {
@@ -58,7 +68,7 @@ export default function CompleteProfile() {
         role: selectedRole,
         phoneNumber: formData.phoneNumber,
         societyName: formData.societyName,
-        flatGate: formData.flatGate,
+        flatGate: formData.flatGate.trim().toUpperCase(),
         status: status,
         createdAt: new Date().toISOString()
       }

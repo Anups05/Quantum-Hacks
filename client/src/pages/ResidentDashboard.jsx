@@ -1,4 +1,4 @@
-import { useState, useContext } from 'react'
+import { useState, useContext, useEffect } from 'react'
 import { AuthContext } from '../App'
 import {
   Shield, LogOut, Bell, Home, Clock, Users, History, Settings,
@@ -13,9 +13,23 @@ import {
   getTimeAgo, getStatusColor, getStatusLabel, getRiskBadge, getTrustColor
 } from '../data/mockData'
 import { QRCodeSVG } from 'qrcode.react'
+import { db } from '../firebase'
+import { doc, updateDoc } from 'firebase/firestore'
+import { validatePhoneFormat, checkPhoneUnique } from '../utils/phoneValidation'
+import {
+  getPendingVisitorsForFlat, getVisitorHistoryForFlat,
+  approveVisitor, rejectVisitor, blockVisitor, getTodayEntries
+} from '../utils/visitorHelpers'
 
 export default function ResidentDashboard() {
-  const { user, logout } = useContext(AuthContext)
+  const { user, setUser, logout } = useContext(AuthContext)
+  const [profileData, setProfileData] = useState({
+    name: user.name || '',
+    phoneNumber: user.phoneNumber || ''
+  })
+  const [profileLoading, setProfileLoading] = useState(false)
+  const [profileError, setProfileError] = useState('')
+  const [profileSuccess, setProfileSuccess] = useState('')
   const [activeTab, setActiveTab] = useState('home')
   const [showNotifications, setShowNotifications] = useState(false)
   const [showPreApprove, setShowPreApprove] = useState(false)
@@ -23,8 +37,70 @@ export default function ResidentDashboard() {
   const [showQR, setShowQR] = useState(null)
   const unreadCount = mockNotifications.filter(n => !n.read).length
 
-  const myVisitors = mockVisitors.filter(v => v.flat === 'A-302')
-  const pendingVisitors = mockVisitors.filter(v => v.status === 'pending' && v.flat === 'A-302')
+  const handleProfileUpdate = async (e) => {
+    e.preventDefault()
+    setProfileLoading(true)
+    setProfileError('')
+    setProfileSuccess('')
+    try {
+      if (!validatePhoneFormat(profileData.phoneNumber)) {
+        throw new Error('Phone number must be +91 followed by 10 digits.')
+      }
+      const isUnique = await checkPhoneUnique(profileData.phoneNumber, user.uid)
+      if (!isUnique) {
+        throw new Error('This phone number is already registered to another account.')
+      }
+      await updateDoc(doc(db, 'users', user.uid), profileData)
+      setUser({ ...user, ...profileData })
+      setProfileSuccess("Profile updated successfully")
+    } catch(err) {
+      console.error(err)
+      setProfileError(err.message)
+    } finally {
+      setProfileLoading(false)
+    }
+  }
+
+  const [pendingVisitors, setPendingVisitors] = useState([])
+  const [visitHistory, setVisitHistory] = useState([])
+  const [todayEntries, setTodayEntries] = useState([])
+  const [loadingVisitors, setLoadingVisitors] = useState(true)
+
+  // Load real visitor data
+  useEffect(() => {
+    if (!user?.societyName || !user?.flatGate) return
+    const load = async () => {
+      try {
+        const safeFlat = user.flatGate.trim().toUpperCase()
+        const [pending, history, today] = await Promise.all([
+          getPendingVisitorsForFlat(user.societyName, safeFlat),
+          getVisitorHistoryForFlat(user.societyName, safeFlat),
+          getTodayEntries(user.societyName)
+        ])
+        setPendingVisitors(pending)
+        setVisitHistory(history)
+        setTodayEntries(today.filter(v => v.flatGate === safeFlat || v.flatGate === user.flatGate))
+      } catch(e) { console.error(e) } finally { setLoadingVisitors(false) }
+    }
+    load()
+  }, [user])
+
+  const handleApprove = async (visitorId) => {
+    await approveVisitor(visitorId)
+    setPendingVisitors(prev => prev.filter(v => v.id !== visitorId))
+    const updated = await getVisitorHistoryForFlat(user.societyName, user.flatGate.trim().toUpperCase())
+    setVisitHistory(updated)
+  }
+
+  const handleReject = async (visitorId) => {
+    await rejectVisitor(visitorId)
+    setPendingVisitors(prev => prev.filter(v => v.id !== visitorId))
+  }
+
+  const handleBlock = async (visitorId, visitorData) => {
+    await blockVisitor(visitorId, visitorData)
+    setPendingVisitors(prev => prev.filter(v => v.id !== visitorId))
+  }
 
   const tabs = [
     { id: 'home', label: 'Home', icon: Home },
@@ -186,8 +262,8 @@ export default function ResidentDashboard() {
                 <div className="w-8 h-8 rounded-lg bg-green-500/15 flex items-center justify-center mb-2">
                   <Users className="w-4 h-4 text-green-400" />
                 </div>
-                <p className="text-2xl font-bold text-white">12</p>
-                <p className="text-xs text-slate-500">This Month</p>
+                <p className="text-2xl font-bold text-white">{todayEntries.length}</p>
+                <p className="text-xs text-slate-500">Visitors Today</p>
               </div>
               <div className="stat-card">
                 <div className="w-8 h-8 rounded-lg bg-blue-500/15 flex items-center justify-center mb-2">
@@ -216,8 +292,12 @@ export default function ResidentDashboard() {
                     View All <ChevronRight className="w-3 h-3" />
                   </button>
                 </div>
-                {pendingVisitors.map(visitor => (
-                  <ApprovalCard key={visitor.id} visitor={visitor} onChat={() => setShowChat(visitor.id)} />
+                {pendingVisitors.slice(0, 2).map(visitor => (
+                  <ResidentApprovalCard key={visitor.id} visitor={visitor}
+                    onApprove={() => handleApprove(visitor.id)}
+                    onReject={() => handleReject(visitor.id)}
+                    onBlock={() => handleBlock(visitor.id, visitor)}
+                  />
                 ))}
               </div>
             )}
@@ -281,13 +361,20 @@ export default function ResidentDashboard() {
           </div>
         )}
 
-        {/* APPROVALS TAB */}
         {activeTab === 'approvals' && (
           <div className="animate-fade-in space-y-4">
             <h2 className="text-lg font-semibold text-white">Visitor Approval Queue</h2>
-            {pendingVisitors.length > 0 ? (
+            {loadingVisitors ? (
+              <p className="text-slate-500 text-sm text-center py-8">Loading...</p>
+            ) : pendingVisitors.length > 0 ? (
               pendingVisitors.map(visitor => (
-                <ApprovalCard key={visitor.id} visitor={visitor} expanded onChat={() => setShowChat(visitor.id)} onShowQR={() => setShowQR(visitor.id)} />
+                <ResidentApprovalCard
+                  key={visitor.id}
+                  visitor={visitor}
+                  onApprove={() => handleApprove(visitor.id)}
+                  onReject={() => handleReject(visitor.id)}
+                  onBlock={() => handleBlock(visitor.id, visitor)}
+                />
               ))
             ) : (
               <div className="glass-card p-8 text-center">
@@ -297,22 +384,38 @@ export default function ResidentDashboard() {
               </div>
             )}
 
-            {/* Recently handled */}
-            <h3 className="text-sm font-semibold text-slate-500 uppercase tracking-wider mt-6">Recently Handled</h3>
-            {mockVisitors.filter(v => ['approved', 'rejected'].includes(v.status) && v.flat === 'A-302').map(visitor => (
-              <div key={visitor.id} className="glass-card p-4 opacity-75">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-xl bg-slate-800 flex items-center justify-center text-sm font-bold text-slate-500">
-                    {visitor.name.charAt(0)}
+            {visitHistory.filter(v => ['approved', 'rejected', 'blocked'].includes(v.status)).length > 0 && (
+              <>
+                <h3 className="text-sm font-semibold text-slate-500 uppercase tracking-wider mt-6">Recently Handled</h3>
+                {visitHistory.filter(v => ['approved', 'rejected', 'blocked'].includes(v.status)).slice(0, 5).map(visitor => (
+                  <div key={visitor.id} className="glass-card p-4 opacity-80">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-xl bg-slate-800 border border-slate-700 flex items-center justify-center flex-shrink-0 overflow-hidden">
+                        {visitor.photo
+                          ? <img src={visitor.photo} alt={visitor.name} className="w-full h-full object-cover" />
+                          : <span className="text-sm font-bold text-slate-500">{visitor.name?.charAt(0)}</span>
+                        }
+                      </div>
+                      <div className="flex-1">
+                        <p className="text-sm text-white">{visitor.name}</p>
+                        <p className="text-xs text-slate-500">{visitor.purpose} • {visitor.phone} • {getTimeAgo(visitor.entryTimestamp)}</p>
+                      </div>
+                      <span className={`badge ${
+                        visitor.status === 'approved' ? 'badge-info' :
+                        visitor.status === 'rejected' ? 'badge-danger' : 'badge-warning'
+                      }`}>{visitor.status}</span>
+                    </div>
+                    {visitor.status === 'approved' && visitor.qrToken && (
+                      <div className="mt-3 bg-slate-900 border border-indigo-500/30 rounded-lg p-2 text-center flex items-center justify-center gap-2">
+                        <QrCode className="w-4 h-4 text-indigo-400" />
+                        <span className="text-slate-300 text-xs font-medium">Visitor approved — QR pass generated</span>
+                        <span className="text-green-400 text-xs">✓</span>
+                      </div>
+                    )}
                   </div>
-                  <div className="flex-1">
-                    <p className="text-sm text-white">{visitor.name}</p>
-                    <p className="text-xs text-slate-500">{visitor.purpose} • {getTimeAgo(visitor.timestamp)}</p>
-                  </div>
-                  <span className={`badge ${getStatusColor(visitor.status)}`}>{getStatusLabel(visitor.status)}</span>
-                </div>
-              </div>
-            ))}
+                ))}
+              </>
+            )}
           </div>
         )}
 
@@ -334,24 +437,33 @@ export default function ResidentDashboard() {
                 }`}>{f}</button>
               ))}
             </div>
-            {myVisitors.map(visitor => (
+            {visitHistory.length === 0 ? (
+              <div className="glass-card p-8 text-center">
+                <p className="text-slate-400 text-sm">No visit history yet</p>
+              </div>
+            ) : visitHistory.map(visitor => (
               <div key={visitor.id} className="glass-card p-4">
                 <div className="flex items-start gap-3">
-                  <div className="w-10 h-10 rounded-xl bg-slate-800 border border-slate-700 flex items-center justify-center text-sm font-bold text-slate-500">
-                    {visitor.name.charAt(0)}
+                  <div className="w-10 h-10 rounded-xl bg-slate-800 border border-slate-700 flex items-center justify-center text-sm font-bold text-slate-500 overflow-hidden flex-shrink-0">
+                    {visitor.photo
+                      ? <img src={visitor.photo} alt={visitor.name} className="w-full h-full object-cover" />
+                      : visitor.name?.charAt(0)
+                    }
                   </div>
                   <div className="flex-1">
                     <div className="flex items-center justify-between">
                       <p className="text-sm font-medium text-white">{visitor.name}</p>
-                      <span className={`badge ${getStatusColor(visitor.status)}`}>{getStatusLabel(visitor.status)}</span>
+                      <span className={`badge ${
+                        visitor.status === 'inside' ? 'badge-success' :
+                        visitor.status === 'approved' ? 'badge-info' :
+                        visitor.status === 'rejected' ? 'badge-danger' :
+                        visitor.status === 'exited' ? 'badge-neutral' : 'badge-warning'
+                      }`}>{visitor.status}</span>
                     </div>
                     <div className="flex items-center gap-3 mt-1 text-xs text-slate-500">
                       <span>{visitor.purpose}</span>
-                      <span>{formatDateTime(visitor.timestamp)}</span>
-                    </div>
-                    <div className="flex items-center gap-2 mt-2">
-                      <span className={`badge ${getRiskBadge(visitor.riskLevel)}`}>{visitor.riskLevel}</span>
-                      <span className="text-xs text-slate-500">Trust: {visitor.trustScore}/100</span>
+                      <span>{visitor.phone}</span>
+                      <span>{formatDateTime(visitor.entryTimestamp)}</span>
                     </div>
                   </div>
                 </div>
@@ -514,22 +626,33 @@ export default function ResidentDashboard() {
           <div className="animate-fade-in space-y-4">
             <h2 className="text-lg font-semibold text-white">Settings</h2>
 
-            <div className="glass-card p-5 space-y-4">
+            {profileError && (
+              <div className="bg-red-500/10 border border-red-500/50 text-red-500 text-sm p-3 rounded-lg mb-4">
+                {profileError}
+              </div>
+            )}
+            {profileSuccess && (
+              <div className="bg-green-500/10 border border-green-500/50 text-green-500 text-sm p-3 rounded-lg mb-4">
+                {profileSuccess}
+              </div>
+            )}
+
+            <form onSubmit={handleProfileUpdate} className="glass-card p-5 space-y-4">
               <div>
                 <label className="block text-sm text-slate-400 mb-1.5">Full Name</label>
-                <input type="text" defaultValue={user.name} className="input-field" />
+                <input type="text" value={profileData.name} onChange={e => setProfileData({...profileData, name: e.target.value})} className="input-field" required />
               </div>
               <div>
                 <label className="block text-sm text-slate-400 mb-1.5">Email</label>
-                <input type="email" defaultValue={user.email} className="input-field" />
+                <input type="email" value={user.email} className="input-field opacity-50 cursor-not-allowed" disabled />
               </div>
               <div>
-                <label className="block text-sm text-slate-400 mb-1.5">Phone</label>
-                <input type="tel" defaultValue={user.phone} className="input-field" />
+                <label className="block text-sm text-slate-400 mb-1.5">Phone (must start with +91)</label>
+                <input type="tel" value={profileData.phoneNumber} onChange={e => setProfileData({...profileData, phoneNumber: e.target.value})} className="input-field" required />
               </div>
               <div>
                 <label className="block text-sm text-slate-400 mb-1.5">Flat Number</label>
-                <input type="text" defaultValue={user.flat} className="input-field" disabled />
+                <input type="text" value={user.flatGate || user.flat} className="input-field opacity-50 cursor-not-allowed" disabled />
               </div>
               <div>
                 <label className="block text-sm text-slate-400 mb-1.5">WhatsApp Number (for approval notifications)</label>
@@ -556,8 +679,10 @@ export default function ResidentDashboard() {
                 </div>
               </div>
 
-              <button className="btn-primary w-full justify-center">Save Settings</button>
-            </div>
+              <button disabled={profileLoading} type="submit" className="btn-primary w-full justify-center">
+                {profileLoading ? 'Saving...' : 'Save Settings'}
+              </button>
+            </form>
           </div>
         )}
       </main>
@@ -701,6 +826,63 @@ function ChatOverlay({ onClose }) {
           <div className="flex gap-2">
             <input type="text" value={message} onChange={(e) => setMessage(e.target.value)} placeholder="Type a message..." className="input-field flex-1" />
             <button className="btn-primary px-3"><Send className="w-4 h-4" /></button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/* ─── RESIDENT APPROVAL CARD ─── */
+function ResidentApprovalCard({ visitor, onApprove, onReject, onBlock }) {
+  const [busy, setBusy] = useState(false)
+
+  const act = async (fn) => {
+    setBusy(true)
+    try { await fn() } catch(e) { console.error(e) }
+    setBusy(false)
+  }
+
+  return (
+    <div className="glass-card p-4 border border-amber-500/20 animate-fade-in">
+      <div className="flex items-start gap-3">
+        <div className="w-14 h-14 rounded-xl bg-slate-800 border border-slate-700 flex items-center justify-center text-lg font-bold text-slate-500 flex-shrink-0 overflow-hidden">
+          {visitor.photo
+            ? <img src={visitor.photo} alt={visitor.name} className="w-full h-full object-cover" />
+            : visitor.name?.charAt(0)
+          }
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-start justify-between gap-2">
+            <div>
+              <p className="text-sm font-semibold text-white">{visitor.name}</p>
+              <p className="text-xs text-slate-400 mt-0.5">{visitor.phone}</p>
+            </div>
+            {visitor.faceMatch === 'mismatch' && (
+              <span className="badge badge-danger text-[10px] flex items-center gap-1 flex-shrink-0">⚠ Face Mismatch</span>
+            )}
+            {visitor.faceMatch === 'matched' && (
+              <span className="badge badge-success text-[10px] flex-shrink-0">✓ Face OK</span>
+            )}
+          </div>
+          <div className="mt-2 flex flex-col gap-1 text-xs text-slate-400">
+            <p><span className="text-slate-500">Purpose:</span> {visitor.purpose}</p>
+            <p><span className="text-slate-500">Flat:</span> {visitor.flatGate}</p>
+            <p><span className="text-slate-500">Time:</span> {new Date(visitor.entryTimestamp).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true })}</p>
+          </div>
+          <div className="flex gap-2 mt-3">
+            <button disabled={busy} onClick={() => act(onApprove)}
+              className="flex-1 py-2 rounded-xl bg-green-500/15 border border-green-500/30 text-green-400 text-xs font-semibold hover:bg-green-500/25 transition-colors">
+              ✓ Approve
+            </button>
+            <button disabled={busy} onClick={() => act(onReject)}
+              className="flex-1 py-2 rounded-xl bg-red-500/15 border border-red-500/30 text-red-400 text-xs font-semibold hover:bg-red-500/25 transition-colors">
+              ✗ Reject
+            </button>
+            <button disabled={busy} onClick={() => act(onBlock)}
+              className="flex-1 py-2 rounded-xl bg-orange-500/15 border border-orange-500/30 text-orange-400 text-xs font-semibold hover:bg-orange-500/25 transition-colors">
+              Block
+            </button>
           </div>
         </div>
       </div>

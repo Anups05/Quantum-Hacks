@@ -21,6 +21,8 @@ import {
   AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend
 } from 'recharts'
+import { validatePhoneFormat, checkPhoneUnique } from '../utils/phoneValidation'
+import { getAllVisitorsForSociety } from '../utils/visitorHelpers'
 
 export default function AdminDashboard() {
   const { user, logout } = useContext(AuthContext)
@@ -107,7 +109,7 @@ export default function AdminDashboard() {
         <header className="sticky top-0 z-40 glass-card rounded-none border-x-0 border-t-0 px-6 py-3">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-4">
-              <button onClick={() => setSidebarOpen(!sidebarOpen)} className="p-2 rounded-lg text-slate-400 hover:text-white transition-colors hidden lg:block">
+              <button onClick={() => setSidebarOpen(!sidebarOpen)} className="p-2 rounded-lg text-slate-400 hover:text-white transition-colors">
                 <LayoutDashboard className="w-5 h-5" />
               </button>
               <div>
@@ -132,7 +134,7 @@ export default function AdminDashboard() {
 
         <div className="p-6 space-y-6">
           {/* OVERVIEW */}
-          {activeSection === 'overview' && <OverviewSection onNavigate={setActiveSection} />}
+          {activeSection === 'overview' && <OverviewSection user={user} onNavigate={setActiveSection} />}
 
           {/* VERIFY RESIDENTS */}
           {activeSection === 'verify' && <VerifyResidentsSection />}
@@ -160,13 +162,48 @@ export default function AdminDashboard() {
   )
 }
 
-function OverviewSection({ onNavigate }) {
+function OverviewSection({ user, onNavigate }) {
+  const [realStats, setRealStats] = useState({
+    todayVisitors: 0,
+    currentlyInside: 0,
+    approvalRate: 0,
+    weekVisitors: 0
+  })
+
+  useEffect(() => {
+    if (!user?.societyName) return;
+    getAllVisitorsForSociety(user.societyName).then(visitors => {
+      // Calculate 'todayString' in IST
+      const now = new Date()
+      const ist = new Date(now.getTime() + (5.5 * 60 * 60 * 1000))
+      const todayString = ist.toISOString().slice(0, 10)
+      
+      const todayVisitors = visitors.filter(v => v.date === todayString)
+      const insideCount = todayVisitors.filter(v => v.status === 'inside').length
+      
+      const resolvedToday = todayVisitors.filter(v => v.status !== 'pending')
+      const approvedCount = resolvedToday.filter(v => ['approved', 'inside', 'exited'].includes(v.status)).length
+      const approvalRate = resolvedToday.length === 0 ? 100 : Math.round((approvedCount / resolvedToday.length) * 100)
+      
+      const aWeekAgo = new Date()
+      aWeekAgo.setDate(aWeekAgo.getDate() - 7)
+      const thisWeekVisitors = visitors.filter(v => new Date(v.entryTimestamp) > aWeekAgo)
+
+      setRealStats({
+        todayVisitors: todayVisitors.length,
+        currentlyInside: insideCount,
+        approvalRate,
+        weekVisitors: thisWeekVisitors.length
+      })
+    }).catch(console.error)
+  }, [user])
+
   const stats = [
-    { label: 'Visitors Today', value: mockAnalytics.todayVisitors, icon: Users, color: 'blue', trend: '+12%', up: true },
-    { label: 'Currently Inside', value: mockAnalytics.currentlyInside, icon: MapPin, color: 'green', trend: '', up: true },
-    { label: 'Approval Rate', value: `${mockAnalytics.approvalRate}%`, icon: CheckCircle, color: 'emerald', trend: '+2.3%', up: true },
-    { label: 'Active Alerts', value: mockAlerts.filter(a => !a.resolved).length, icon: AlertTriangle, color: 'red', trend: '-1', up: false },
-    { label: 'This Week', value: mockAnalytics.weekVisitors, icon: TrendingUp, color: 'purple', trend: '+8%', up: true },
+    { label: 'Visitors Today', value: realStats.todayVisitors, icon: Users, color: 'blue', trend: '', up: true },
+    { label: 'Currently Inside', value: realStats.currentlyInside, icon: MapPin, color: 'green', trend: '', up: true },
+    { label: 'Approval Rate', value: `${realStats.approvalRate}%`, icon: CheckCircle, color: 'emerald', trend: '', up: true },
+    { label: 'Active Alerts', value: mockAlerts.filter(a => !a.resolved).length, icon: AlertTriangle, color: 'red', trend: '', up: false },
+    { label: 'This Week', value: realStats.weekVisitors, icon: TrendingUp, color: 'purple', trend: '', up: true },
     { label: 'Avg Entry Time', value: mockAnalytics.avgEntryTime, icon: Clock, color: 'amber', trend: '', up: true },
   ]
 
@@ -885,6 +922,7 @@ function GuardsSection() {
   const [searchQuery, setSearchQuery] = useState('')
   const [deleteConfirmId, setDeleteConfirmId] = useState(null)
   const [editGuardId, setEditGuardId] = useState(null)
+  const [formError, setFormError] = useState('')
   
   const [formData, setFormData] = useState({
     name: '', email: '', password: '', phone: '', shift: '', gate: '', photo: ''
@@ -934,7 +972,16 @@ function GuardsSection() {
   const handleCreateGuard = async (e) => {
     e.preventDefault()
     setLoading(true)
+    setFormError('')
     try {
+      if (!validatePhoneFormat(formData.phone)) {
+        throw new Error('Phone number must be +91 followed by 10 digits.')
+      }
+      const isUnique = await checkPhoneUnique(formData.phone, editGuardId)
+      if (!isUnique) {
+        throw new Error('This phone number is already registered to another account.')
+      }
+
       if (editGuardId) {
         await updateDoc(doc(db, 'users', editGuardId), {
           name: formData.name,
@@ -967,7 +1014,7 @@ function GuardsSection() {
       setFormData({ name: '', email: '', password: '', phone: '', shift: '', gate: '', photo: '' })
       fetchGuards()
     } catch(err) {
-      alert("Error: " + err.message)
+      setFormError(err.message)
     } finally {
       setLoading(false)
     }
@@ -1029,6 +1076,12 @@ function GuardsSection() {
             </h3>
             {editGuardId && <span className="badge badge-warning text-[10px]">Editing Mode</span>}
           </div>
+
+          {formError && (
+            <div className="bg-red-500/10 border border-red-500/50 text-red-500 text-sm p-3 rounded-lg mb-4">
+              {formError}
+            </div>
+          )}
           <form onSubmit={handleCreateGuard} className="space-y-4">
             
             <div className="flex flex-col md:flex-row gap-6">
@@ -1165,6 +1218,8 @@ function GuardsSection() {
 function SettingsSection() {
   const { user, setUser } = useContext(AuthContext)
   const [loading, setLoading] = useState(false)
+  const [profileError, setProfileError] = useState('')
+  const [profileSuccess, setProfileSuccess] = useState('')
   const [profileData, setProfileData] = useState({
     name: user.name || '',
     email: user.email || '',
@@ -1175,13 +1230,23 @@ function SettingsSection() {
   const handleProfileUpdate = async (e) => {
     e.preventDefault()
     setLoading(true)
+    setProfileError('')
+    setProfileSuccess('')
     try {
+      if (!validatePhoneFormat(profileData.phoneNumber)) {
+        throw new Error('Phone number must be +91 followed by 10 digits.')
+      }
+      const isUnique = await checkPhoneUnique(profileData.phoneNumber, user.uid)
+      if (!isUnique) {
+        throw new Error('This phone number is already registered to another account.')
+      }
+
       await updateDoc(doc(db, 'users', user.uid), profileData)
       setUser({ ...user, ...profileData })
-      alert("Profile updated successfully")
+      setProfileSuccess("Profile updated successfully")
     } catch(err) {
       console.error(err)
-      alert("Failed to update profile")
+      setProfileError(err.message)
     } finally {
       setLoading(false)
     }
@@ -1193,6 +1258,18 @@ function SettingsSection() {
 
       <div className="glass-card p-5 space-y-4 border border-indigo-500/20">
         <h3 className="text-sm font-semibold text-indigo-400">Your Profile (Admin)</h3>
+
+        {profileError && (
+          <div className="bg-red-500/10 border border-red-500/50 text-red-500 text-sm p-3 rounded-lg">
+            {profileError}
+          </div>
+        )}
+        {profileSuccess && (
+          <div className="bg-green-500/10 border border-green-500/50 text-green-500 text-sm p-3 rounded-lg">
+            {profileSuccess}
+          </div>
+        )}
+
         <form onSubmit={handleProfileUpdate} className="space-y-4">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
@@ -1209,7 +1286,7 @@ function SettingsSection() {
             </div>
             <div>
               <label className="block text-sm text-slate-400 mb-1.5">Flat Number</label>
-              <input type="text" value={profileData.flatGate} onChange={(e) => setProfileData({...profileData, flatGate: e.target.value})} className="input-field" required />
+              <input type="text" value={profileData.flatGate} disabled className="input-field opacity-50 cursor-not-allowed" />
             </div>
           </div>
           <button type="submit" disabled={loading} className="btn-primary">

@@ -3,6 +3,7 @@ import { Shield, Eye, UserCheck, Lock, Mail, User, Building, Phone, ChevronRight
 import { auth, db, googleProvider } from '../firebase'
 import { signInWithEmailAndPassword, createUserWithEmailAndPassword, signInWithPopup } from 'firebase/auth'
 import { doc, setDoc } from 'firebase/firestore'
+import { validatePhoneFormat, checkPhoneUnique } from '../utils/phoneValidation'
 
 export default function Login() {
   const [isRegister, setIsRegister] = useState(false)
@@ -53,6 +54,16 @@ export default function Login() {
     setErrorMsg('')
     try {
       if (isRegister) {
+        // Validation check
+        if (!validatePhoneFormat(formData.phoneNumber)) {
+          throw new Error('Phone number must be +91 followed by 10 digits.')
+        }
+        
+        const isUnique = await checkPhoneUnique(formData.phoneNumber)
+        if (!isUnique) {
+          throw new Error('This phone number is already registered.')
+        }
+
         // Register flow
         const userCredential = await createUserWithEmailAndPassword(auth, formData.email, formData.password)
         const user = userCredential.user
