@@ -5,7 +5,7 @@ import {
   CheckCircle, XCircle, AlertTriangle, QrCode, Plus, Search,
   Phone, User, Calendar, ChevronRight, Eye, MessageCircle,
   Ban, List, UserPlus, Trash2, Edit, Pause, Play, X, Send,
-  Truck, MapPin, Share2
+  Truck, MapPin, Share2, Camera
 } from 'lucide-react'
 import {
   mockVisitors, mockNotifications, mockRecurringPasses, mockExpectedVisitors,
@@ -19,7 +19,8 @@ import { validatePhoneFormat, checkPhoneUnique } from '../utils/phoneValidation'
 import {
   getPendingVisitorsForFlat, getVisitorHistoryForFlat,
   approveVisitor, rejectVisitor, blockVisitor, getTodayEntries,
-  createPreApprovedPass, compressImageToBase64
+  createPreApprovedPass, compressImageToBase64,
+  getPreApprovedPassesForFlat, deletePreApprovedPass
 } from '../utils/visitorHelpers'
 
 export default function ResidentDashboard() {
@@ -65,6 +66,7 @@ export default function ResidentDashboard() {
   const [pendingVisitors, setPendingVisitors] = useState([])
   const [visitHistory, setVisitHistory] = useState([])
   const [todayEntries, setTodayEntries] = useState([])
+  const [activePasses, setActivePasses] = useState([])
   const [loadingVisitors, setLoadingVisitors] = useState(true)
 
   // History tab filtering
@@ -112,18 +114,20 @@ export default function ResidentDashboard() {
     const load = async () => {
       try {
         const safeFlat = user.flatGate.trim().toUpperCase()
-        const [pending, history, today] = await Promise.all([
+        const [pending, history, today, passes] = await Promise.all([
           getPendingVisitorsForFlat(user.societyName, safeFlat),
           getVisitorHistoryForFlat(user.societyName, safeFlat),
-          getTodayEntries(user.societyName)
+          getTodayEntries(user.societyName),
+          getPreApprovedPassesForFlat(user.societyName, safeFlat)
         ])
         setPendingVisitors(pending)
         setVisitHistory(history)
         setTodayEntries(today.filter(v => v.flatGate === safeFlat || v.flatGate === user.flatGate))
+        setActivePasses(passes)
       } catch(e) { console.error(e) } finally { setLoadingVisitors(false) }
     }
     load()
-  }, [user])
+  }, [user, showPreApprove])
 
   const handleApprove = async (visitorId) => {
     await approveVisitor(visitorId)
@@ -140,6 +144,26 @@ export default function ResidentDashboard() {
   const handleBlock = async (visitorId, visitorData) => {
     await blockVisitor(visitorId, visitorData)
     setPendingVisitors(prev => prev.filter(v => v.id !== visitorId))
+  }
+
+  const [viewQrId, setViewQrId] = useState(null)
+  const [deleteConfirmId, setDeleteConfirmId] = useState(null)
+  
+  const downloadViewedQR = (passName) => {
+    const canvas = document.getElementById('view-qr-canvas')
+    if (canvas) {
+      const url = canvas.toDataURL('image/png')
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `visitor-pass-${passName}.png`
+      link.click()
+    }
+  }
+
+  const handleDeletePass = async (passId) => {
+    await deletePreApprovedPass(passId)
+    setActivePasses(prev => prev.filter(p => p.id !== passId))
+    setDeleteConfirmId(null)
   }
 
   const tabs = [
@@ -309,7 +333,7 @@ export default function ResidentDashboard() {
                 <div className="w-8 h-8 rounded-lg bg-blue-500/15 flex items-center justify-center mb-2">
                   <QrCode className="w-4 h-4 text-blue-400" />
                 </div>
-                <p className="text-2xl font-bold text-white">{mockRecurringPasses.filter(p => p.active).length}</p>
+                <p className="text-2xl font-bold text-white">{activePasses.length}</p>
                 <p className="text-xs text-slate-500">Active Passes</p>
               </div>
               <div className="stat-card">
@@ -532,42 +556,38 @@ export default function ResidentDashboard() {
               </button>
             </div>
 
-            {/* Recurring Passes */}
+            {/* Active Pre-Approved Passes */}
             <div>
               <h3 className="text-sm font-semibold text-slate-400 mb-3 flex items-center gap-2">
-                <Calendar className="w-4 h-4" /> Recurring Passes
+                <Calendar className="w-4 h-4" /> Active Pre-Approved Passes
               </h3>
-              {mockRecurringPasses.map(pass => (
-                <div key={pass.id} className={`glass-card p-4 mb-3 ${!pass.active ? 'opacity-50' : ''}`}>
+              {activePasses.length === 0 ? (
+                <div className="text-center py-8 bg-slate-800/30 rounded-xl border border-dashed border-slate-700">
+                  <p className="text-slate-400 text-sm">No active passes found.</p>
+                </div>
+              ) : activePasses.map(pass => (
+                <div key={pass.id} className={`glass-card p-4 mb-3`}>
                   <div className="flex items-start justify-between">
                     <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 rounded-xl bg-blue-500/15 flex items-center justify-center">
-                        <User className="w-5 h-5 text-blue-400" />
+                      <div className="w-10 h-10 rounded-xl bg-green-500/15 flex items-center justify-center">
+                        <User className="w-5 h-5 text-green-400" />
                       </div>
                       <div>
-                        <p className="text-sm font-medium text-white">{pass.name}</p>
+                        <p className="text-sm font-medium text-white">{pass.name} <span className="text-xs text-slate-400">({pass.purpose})</span></p>
                         <p className="text-xs text-slate-500">{pass.phone}</p>
-                        <div className="flex gap-1 mt-1.5 flex-wrap">
-                          {pass.days.map(day => (
-                            <span key={day} className="px-2 py-0.5 rounded text-[10px] bg-slate-800 text-slate-400">{day}</span>
-                          ))}
-                        </div>
-                        <p className="text-xs text-slate-500 mt-1">{pass.timeWindow}</p>
+                        <p className="text-xs text-slate-500 mt-1">
+                          Valid: {new Date(pass.validFrom).toLocaleDateString()} {new Date(pass.validFrom).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})} - {new Date(pass.validUntil).toLocaleDateString()} {new Date(pass.validUntil).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                        </p>
                       </div>
                     </div>
                     <div className="flex items-center gap-1">
-                      <button className="p-1.5 rounded-lg text-slate-500 hover:text-amber-400 transition-colors">
-                        {pass.active ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
+                      <button onClick={() => setViewQrId(viewQrId === pass.id ? null : pass.id)} className="p-1.5 rounded-lg text-slate-500 hover:text-indigo-400 transition-colors" title="View QR">
+                        <Eye className="w-4 h-4" />
                       </button>
-                      <button className="p-1.5 rounded-lg text-slate-500 hover:text-red-400 transition-colors">
+                      <button onClick={() => setDeleteConfirmId(pass.id)} className="p-1.5 rounded-lg text-slate-500 hover:text-red-400 transition-colors" title="Revoke Pass">
                         <Trash2 className="w-4 h-4" />
                       </button>
                     </div>
-                  </div>
-                  <div className="mt-2 flex items-center gap-2">
-                    <span className={`badge ${pass.active ? 'badge-success' : 'badge-neutral'}`}>
-                      {pass.active ? 'Active' : 'Paused'}
-                    </span>
                   </div>
                 </div>
               ))}
@@ -743,6 +763,57 @@ export default function ResidentDashboard() {
            onClose={() => setShowPreApprove(false)} 
            user={user} 
         />
+      )}
+
+      {/* Delete Confirmation Modal */}
+      {deleteConfirmId && (
+        <div className="fixed inset-0 z-[200] bg-black/60 flex items-center justify-center p-4">
+          <div className="glass-card w-full max-w-xs p-6 animate-fade-in text-center shadow-xl border border-red-500/20">
+            <div className="w-12 h-12 bg-red-500/20 rounded-full flex items-center justify-center mx-auto mb-4 text-red-500">
+              <Trash2 className="w-6 h-6" />
+            </div>
+            <h3 className="text-lg font-bold text-white mb-2">Delete Pass?</h3>
+            <p className="text-sm text-slate-400 mb-6">Are you sure you want to completely delete this pass? This action cannot be undone.</p>
+            <div className="flex gap-3">
+              <button onClick={() => setDeleteConfirmId(null)} className="btn-outline flex-1 justify-center py-2 text-sm">
+                Cancel
+              </button>
+              <button onClick={() => handleDeletePass(deleteConfirmId)} className="btn-danger flex-1 justify-center py-2 text-sm shadow-lg shadow-red-500/20">
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* View QR Modal */}
+      {viewQrId && (
+        <div className="fixed inset-0 z-[200] bg-black/60 flex items-center justify-center p-4">
+          <div className="glass-card w-full max-w-sm p-6 animate-fade-in text-center shadow-2xl">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-lg font-bold text-white">Visitor Pass QR</h3>
+              <button onClick={() => setViewQrId(null)} className="p-1 rounded-lg text-slate-400 hover:text-white">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            
+            <div className="bg-slate-800/50 rounded-xl p-6 inline-block mx-auto mb-4 border border-slate-700">
+              <div className="bg-white rounded-xl p-2 inline-block">
+                <QRCodeCanvas id="view-qr-canvas" value={viewQrId} size={180} level="H" includeMargin />
+              </div>
+            </div>
+            
+            <p className="text-sm text-slate-300 mb-6 px-4">
+              Hold this code up to the guard's scanner for direct entry. 
+            </p>
+            
+            <div className="flex gap-3">
+              <button onClick={() => downloadViewedQR(activePasses.find(p => p.id === viewQrId)?.name || 'Guest')} className="btn-primary flex-1 justify-center py-2.5">
+                Download Image
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Chat Overlay */}

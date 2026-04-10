@@ -1,6 +1,6 @@
 import {
   collection, query, where, getDocs, addDoc, doc,
-  updateDoc, getDoc, setDoc, Timestamp
+  updateDoc, getDoc, setDoc, Timestamp, deleteDoc
 } from 'firebase/firestore'
 import { db } from '../firebase'
 
@@ -149,6 +149,23 @@ export const getPendingVisitorsForFlat = async (societyName, flatGate) => {
 }
 
 /**
+ * Fetch active pre-approved passes for a specific flat
+ */
+export const getPreApprovedPassesForFlat = async (societyName, flatGate) => {
+  const q = query(
+    collection(db, 'visitors'),
+    where('societyName', '==', societyName),
+    where('flatGate', '==', flatGate),
+    where('type', '==', 'pre_approved_visitor')
+  )
+  const snap = await getDocs(q)
+  const now = new Date()
+  return snap.docs
+    .map(d => ({ id: d.id, ...d.data() }))
+    .filter(pass => pass.status !== 'revoked' && new Date(pass.validUntil) >= now)
+}
+
+/**
  * Fetch all visitor entries for a specific flat (for history)
  */
 export const getVisitorHistoryForFlat = async (societyName, flatGate) => {
@@ -180,6 +197,14 @@ export const approveVisitor = async (visitorId) => {
  */
 export const rejectVisitor = async (visitorId) => {
   await updateDoc(doc(db, 'visitors', visitorId), { status: 'rejected' })
+}
+
+/**
+ * Delete a Pre-Approved Pass
+ */
+export const deletePreApprovedPass = async (passId) => {
+  // Hard delete as requested
+  await deleteDoc(doc(db, 'visitors', passId))
 }
 
 /**
@@ -221,7 +246,25 @@ export const verifyOtpToken = async (otp, societyName) => {
  * Mark a visitor exit
  */
 export const markVisitorExit = async (visitorId) => {
-  await updateDoc(doc(db, 'visitors', visitorId), {
+  const visitorRef = doc(db, 'visitors', visitorId)
+  const snap = await getDoc(visitorRef)
+  
+  if (snap.exists()) {
+    const data = snap.data()
+    const now = new Date()
+    
+    // Check if it's a reusable pre-approved pass that hasn't expired
+    if (data.type === 'pre_approved_visitor' && data.validUntil && now < new Date(data.validUntil)) {
+      await updateDoc(visitorRef, {
+        status: 'pre_approved_active', // recycle it for another entry!
+        exitTimestamp: now.toISOString()
+      })
+      return
+    }
+  }
+
+  // default exit behavior
+  await updateDoc(visitorRef, {
     status: 'exited',
     exitTimestamp: new Date().toISOString()
   })

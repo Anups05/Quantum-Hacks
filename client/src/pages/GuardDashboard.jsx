@@ -739,31 +739,33 @@ function ScanTab({ user }) {
   const [otpInput, setOtpInput] = useState(['', '', '', '', '', ''])
   const otpRefs = useRef([])
   const [scanning, setScanning] = useState(false)
-  const [result, setResult] = useState(null)
+  const [scanResult, setScanResult] = useState(null)
+  const [otpResult, setOtpResult] = useState(null)
   const scannerRef = useRef(null)
+  const isProcessingRef = useRef(false) // prevents concurrent scans
 
   useEffect(() => {
     if (scanning) {
+      isProcessingRef.current = false // reset on new scan
       if (!scannerRef.current) {
-        setResult({ status: 'info', message: 'Initializing camera...' })
-        // Use Html5Qrcode instead of Scanner to force direct camera feed and avoid drag&drop UI
+        setScanResult({ status: 'info', message: 'Initializing camera...' })
         import('html5-qrcode').then(({ Html5Qrcode }) => {
           Html5Qrcode.getCameras().then(devices => {
             if (devices && devices.length) {
               const html5QrCode = new Html5Qrcode("qr-reader")
               scannerRef.current = html5QrCode
               html5QrCode.start(
-                { facingMode: "environment" }, // prefer back camera
+                { facingMode: "environment" },
                 { fps: 10, qrbox: { width: 250, height: 250 } },
                 onScanSuccess,
                 onScanFailure
               )
             } else {
-              setResult({ status: 'error', message: 'No cameras found on your device.' })
+              setScanResult({ status: 'error', message: 'No cameras found on your device.' })
               setScanning(false)
             }
           }).catch(err => {
-            setResult({ status: 'error', message: 'Camera permission denied or camera not found.' })
+            setScanResult({ status: 'error', message: 'Camera permission denied or camera not found.' })
             setScanning(false)
           })
         })
@@ -788,15 +790,19 @@ function ScanTab({ user }) {
   }, [scanning])
 
   const onScanSuccess = async (decodedText, decodedResult) => {
-    // Attempt fetching the pass
-    setScanning(false) // stop scanning immediately
-    setResult({ status: 'info', message: 'Verifying Pass...' })
+    if (isProcessingRef.current) return
+    isProcessingRef.current = true
+
+    if (scannerRef.current) {
+      scannerRef.current.pause()
+    }
+    setScanResult({ status: 'info', message: 'Verifying Pass...' })
     
     try {
       const pass = await getPassById(decodedText)
       
       if (!pass) {
-        throw new Error("Invalid or unrecognizable QR Pass.")
+        throw new Error("this is not a valid qr get a valid qr")
       }
       
       const now = new Date()
@@ -807,27 +813,28 @@ function ScanTab({ user }) {
         throw new Error(`Pass is not valid yet (Starts ${validFrom.toLocaleString()}).`)
       }
       if (now > validUntil) {
-        throw new Error(`Pass has expired (Ended ${validUntil.toLocaleString()}).`)
+        throw new Error(`qr is expired please make new (Ended ${validUntil.toLocaleString()})`)
       }
       if (pass.status !== 'pre_approved_active') {
         throw new Error(`Pass is inactive or has already been used.`)
       }
 
-      setResult({ status: 'info', message: 'Logging visitor...' })
-      await logPreApprovedEntry({
-        name: pass.name,
-        phone: pass.phone,
-        purpose: pass.purpose,
-        flatGate: pass.flatGate,
-        societyName: pass.societyName,
-        enteredBy: user.uid,
-        validFrom: pass.validFrom,
-        validUntil: pass.validUntil
-      })
+      setScanResult({ status: 'info', message: 'Logging visitor...' })
+      await markPreApprovedVisitorInside(decodedText, user.uid)
 
-      setResult({ status: 'success', message: `${pass.name} pre-approved and marked INSIDE.` })
+      setScanResult({ status: 'success', message: `${pass.name} Approved` })
     } catch (err) {
-      setResult({ status: 'error', message: err.message })
+      setScanResult({ status: 'error', message: err.message })
+    } finally {
+      if (scannerRef.current) {
+        scannerRef.current.stop().then(() => {
+          scannerRef.current.clear()
+          scannerRef.current = null
+          setScanning(false)
+        }).catch(() => setScanning(false))
+      } else {
+        setScanning(false)
+      }
     }
   }
 
@@ -852,16 +859,16 @@ function ScanTab({ user }) {
   const handleVerifyOTP = async () => {
     const token = otpInput.join('')
     if (token.length !== 6) {
-      setResult({ status: 'error', message: 'Please enter a 6-digit OTP.' })
+      setOtpResult({ status: 'error', message: 'Please enter a 6-digit OTP.' })
       return
     }
     try {
-      setResult({ status: 'info', message: 'Verifying OTP...' })
+      setOtpResult({ status: 'info', message: 'Verifying OTP...' })
       const visitor = await verifyOtpToken(token, user.societyName)
-      setResult({ status: 'success', message: `Visitor ${visitor.name} marked inside.` })
+      setOtpResult({ status: 'success', message: `Visitor ${visitor.name} marked inside.` })
       setOtpInput(['', '', '', '', '', '']) // reset
     } catch (err) {
-      setResult({ status: 'error', message: err.message })
+      setOtpResult({ status: 'error', message: err.message })
     }
   }
 
@@ -874,11 +881,24 @@ function ScanTab({ user }) {
 
         {!scanning ? (
           <div className="aspect-square max-w-sm mx-auto rounded-2xl bg-slate-900 border-2 border-dashed border-slate-700 flex flex-col items-center justify-center gap-4 relative overflow-hidden">
-            <ScanLine className="w-12 h-12 text-slate-600" />
-            <div className="text-center z-10">
-              <p className="text-sm text-slate-400">Point camera at QR code</p>
-              <p className="text-xs text-slate-600 mt-1">Visitor's approved pass QR</p>
-            </div>
+            {scanResult ? (
+              <div className={`p-6 text-center animate-fade-in ${
+                scanResult.status === 'success' ? 'text-green-400' : 
+                scanResult.status === 'error' ? 'text-red-400' : 'text-blue-400'
+              }`}>
+                {scanResult.status === 'success' && <CheckCircle className="w-16 h-16 mx-auto mb-4" />}
+                {scanResult.status === 'error' && <XCircle className="w-16 h-16 mx-auto mb-4" />}
+                <p className="font-semibold text-lg">{scanResult.message}</p>
+              </div>
+            ) : (
+              <>
+                <ScanLine className="w-12 h-12 text-slate-600" />
+                <div className="text-center z-10">
+                  <p className="text-sm text-slate-400">Point camera at QR code</p>
+                  <p className="text-xs text-slate-600 mt-1">Visitor's approved pass QR</p>
+                </div>
+              </>
+            )}
           </div>
         ) : (
           <div className="max-w-sm mx-auto overflow-hidden rounded-2xl border-2 border-indigo-500">
@@ -889,7 +909,7 @@ function ScanTab({ user }) {
         <div className="mt-4 text-center">
           <button className={scanning ? 'btn-danger' : 'btn-primary'} onClick={() => {
             setScanning(!scanning)
-            if (scanning) setResult(null)
+            if (scanning) setScanResult(null)
           }}>
             <Camera className="w-4 h-4" /> {scanning ? 'Stop Camera' : 'Open Camera Scanner'}
           </button>
@@ -919,16 +939,16 @@ function ScanTab({ user }) {
               <CheckCircle className="w-4 h-4" /> Verify & Mark Inside
             </button>
           </div>
-          {result && (
+          {otpResult && (
             <div className={`mt-4 p-3 rounded-lg text-sm font-medium ${
-              result.status === 'success' ? 'bg-green-500/15 border border-green-500/30 text-green-400' : 
-              result.status === 'error' ? 'bg-red-500/15 border border-red-500/30 text-red-400' :
-              result.status === 'info' ? 'bg-indigo-500/15 border border-indigo-500/30 text-indigo-400' :
+              otpResult.status === 'success' ? 'bg-green-500/15 border border-green-500/30 text-green-400' : 
+              otpResult.status === 'error' ? 'bg-red-500/15 border border-red-500/30 text-red-400' :
+              otpResult.status === 'info' ? 'bg-indigo-500/15 border border-indigo-500/30 text-indigo-400' :
               'bg-blue-500/15 border border-blue-500/30 text-blue-400'
             }`}>
-              {result.status === 'success' && <CheckCircle className="w-4 h-4 inline mr-2" />}
-              {result.status === 'error' && <XCircle className="w-4 h-4 inline mr-2" />}
-              {result.message}
+              {otpResult.status === 'success' && <CheckCircle className="w-4 h-4 inline mr-2" />}
+              {otpResult.status === 'error' && <XCircle className="w-4 h-4 inline mr-2" />}
+              {otpResult.message}
             </div>
           )}
         </div>
@@ -1026,6 +1046,25 @@ function VisitorsTab({ user, todayEntries, loading }) {
                   <p className="text-[10px] text-red-400 mt-1 flex items-center gap-1">
                     <AlertTriangle className="w-3 h-3" /> Face mismatch recorded
                   </p>
+                )}
+                {visitor.status === 'inside' && (
+                  <div className="mt-3 flex justify-end">
+                    <button 
+                      onClick={async () => {
+                        if (confirm(`Mark ${visitor.name} as exited?`)) {
+                          try {
+                            await markVisitorExit(visitor.id)
+                            alert('Visitor exited successfully.')
+                          } catch (e) {
+                            alert('Error updating exit status.')
+                          }
+                        }
+                      }}
+                      className="btn-outline py-1 px-3 text-xs text-slate-400 hover:text-white"
+                    >
+                      Mark Exit
+                    </button>
+                  </div>
                 )}
               </div>
             </div>

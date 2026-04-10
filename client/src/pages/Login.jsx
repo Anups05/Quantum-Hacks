@@ -59,14 +59,15 @@ export default function Login() {
           throw new Error('Phone number must be +91 followed by 10 digits.')
         }
         
-        const isUnique = await checkPhoneUnique(formData.phoneNumber)
-        if (!isUnique) {
-          throw new Error('This phone number is already registered.')
-        }
-
-        // Register flow
+        // Register flow - create auth first to get Firestore read permissions
         const userCredential = await createUserWithEmailAndPassword(auth, formData.email, formData.password)
         const user = userCredential.user
+
+        const isUnique = await checkPhoneUnique(formData.phoneNumber)
+        if (!isUnique) {
+          // Note: In production you might want to delete the newly created auth user here
+          throw new Error('This phone number is already registered.')
+        }
         
         const status = selectedRole === 'admin' ? 'approved' : 'pending'
 
