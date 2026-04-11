@@ -19,11 +19,14 @@ import {
 } from '../utils/visitorHelpers'
 import { Html5QrcodeScanner } from 'html5-qrcode'
 import VisitorChatModal from '../components/VisitorChatModal'
+import { subscribeToUserNotifications, markNotificationRead, markAllNotificationsRead } from '../utils/notificationHelpers'
 
 export default function GuardDashboard() {
   const { user, logout } = useContext(AuthContext)
   const [activeTab, setActiveTab] = useState('home')
-  const [notifications] = useState(mockAlerts.filter(a => !a.resolved).length)
+  const [guardNotifications, setGuardNotifications] = useState([])
+  const [showNotifications, setShowNotifications] = useState(false)
+  const unreadCount = guardNotifications.filter(n => !n.read).length
 
   // Lift todayEntries to parent so polling runs regardless of active tab
   const [todayEntries, setTodayEntries] = useState([])
@@ -41,9 +44,14 @@ export default function GuardDashboard() {
         .catch(console.error)
     }
     load()
-    // Poll every 4s — so approvals from residents show QR within a few seconds
     const interval = setInterval(load, 4000)
     return () => clearInterval(interval)
+  }, [user])
+
+  useEffect(() => {
+    if (!user?.uid) return
+    const unsub = subscribeToUserNotifications(user.uid, setGuardNotifications)
+    return () => unsub()
   }, [user])
 
   // Pending count for badge
@@ -72,11 +80,14 @@ export default function GuardDashboard() {
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <button className="relative p-2 rounded-xl bg-slate-800/60 text-slate-400 hover:text-white transition-colors">
+            <button
+              onClick={() => setShowNotifications(v => !v)}
+              className="relative p-2 rounded-xl bg-slate-800/60 text-slate-400 hover:text-white transition-colors"
+            >
               <Bell className="w-5 h-5" />
-              {notifications > 0 && (
+              {unreadCount > 0 && (
                 <span className="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-red-500 text-[10px] text-white font-bold flex items-center justify-center">
-                  {notifications}
+                  {unreadCount}
                 </span>
               )}
             </button>
@@ -95,6 +106,63 @@ export default function GuardDashboard() {
           </div>
         </div>
       </header>
+
+      {/* Guard Notification Panel */}
+      {showNotifications && (
+        <div className="fixed inset-0 z-[60]" onClick={() => setShowNotifications(false)}>
+          <div className="absolute top-[60px] right-4 w-80 glass-card p-0 overflow-hidden animate-fade-in shadow-2xl" onClick={e => e.stopPropagation()}>
+            <div className="p-3 border-b border-slate-800 flex items-center justify-between">
+              <h3 className="text-sm font-semibold text-white flex items-center gap-2">
+                Notifications
+                {unreadCount > 0 && <span className="px-1.5 py-0.5 rounded-full bg-red-500 text-[10px] text-white font-bold">{unreadCount} new</span>}
+              </h3>
+              {unreadCount > 0 && (
+                <button onClick={() => markAllNotificationsRead(user.uid)} className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors">
+                  Mark all done
+                </button>
+              )}
+            </div>
+            <div className="max-h-[420px] overflow-y-auto divide-y divide-slate-800/50">
+              {guardNotifications.length === 0 ? (
+                <div className="p-8 text-center">
+                  <Bell className="w-10 h-10 text-slate-800 mx-auto mb-2" />
+                  <p className="text-slate-500 text-sm">All caught up!</p>
+                  <p className="text-slate-600 text-xs mt-1">Resident actions & chat alerts appear here</p>
+                </div>
+              ) : guardNotifications.map(n => {
+                const typeConfig = {
+                  chat_message:     { bg: 'bg-indigo-500/20',  icon: <MessageCircle className="w-3.5 h-3.5 text-indigo-400" />, border: 'border-l-indigo-500' },
+                  visitor_approved: { bg: 'bg-green-500/20',   icon: <CheckCircle className="w-3.5 h-3.5 text-green-400" />,    border: 'border-l-green-500'  },
+                  visitor_rejected: { bg: 'bg-red-500/20',     icon: <XCircle className="w-3.5 h-3.5 text-red-400" />,          border: 'border-l-red-500'    },
+                  visitor_blocked:  { bg: 'bg-red-700/20',     icon: <AlertTriangle className="w-3.5 h-3.5 text-red-500" />,    border: 'border-l-red-700'    },
+                }[n.type] || { bg: 'bg-slate-700', icon: <Bell className="w-3.5 h-3.5 text-slate-400" />, border: 'border-l-slate-600' }
+
+                return (
+                  <div key={n.id} className={`p-3 hover:bg-slate-800/40 transition-colors border-l-2 ${typeConfig.border} ${!n.read ? 'bg-indigo-500/5' : ''}`}>
+                    <div className="flex gap-3 items-start">
+                      <div className={`w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5 ${typeConfig.bg}`}>
+                        {typeConfig.icon}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm text-white font-medium leading-snug">{n.title}</p>
+                        <p className="text-xs text-slate-400 mt-0.5 leading-relaxed">{n.message}</p>
+                        <p className="text-[10px] text-slate-600 mt-1">{getTimeAgo(n.createdAt)}</p>
+                      </div>
+                      {!n.read && (
+                        <button
+                          onClick={e => { e.stopPropagation(); markNotificationRead(n.id) }}
+                          className="flex-shrink-0 w-2 h-2 rounded-full bg-indigo-500 hover:bg-indigo-400 transition-colors mt-2"
+                          title="Mark as done"
+                        />
+                      )}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Tab Navigation */}
       <nav className="sticky top-[60px] z-40 bg-[var(--color-dark)]/95 backdrop-blur border-b border-slate-800 px-4">
@@ -402,7 +470,6 @@ function ActiveVisitorCard({ visitor, user, onStatusChange }) {
 
 /* ─────────────────────────── NEW ENTRY TAB ─── */
 function NewEntryTab({ user, todayEntries, onDone }) {
-  const fileInputRef = useRef(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [submitted, setSubmitted] = useState(null)
@@ -410,7 +477,69 @@ function NewEntryTab({ user, todayEntries, onDone }) {
   const [formData, setFormData] = useState({
     name: '', phone: '+91', purpose: '', flatGate: '', photo: null
   })
-  const [photoFile, setPhotoFile] = useState(null)
+  
+  // ── Webcam state ────────────────────────────────────────
+  const videoRef = useRef(null)
+  const canvasRef = useRef(null)
+  const [isCameraActive, setIsCameraActive] = useState(false)
+  const [cameraError, setCameraError] = useState('')
+
+  const startCamera = async () => {
+    try {
+      setCameraError('')
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' } })
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream
+        setIsCameraActive(true)
+      }
+    } catch (err) {
+      console.error('Camera error:', err)
+      setCameraError('Camera access denied. Please allow camera permissions.')
+    }
+  }
+
+  const stopCamera = () => {
+    if (videoRef.current && videoRef.current.srcObject) {
+      const tracks = videoRef.current.srcObject.getTracks()
+      tracks.forEach(track => track.stop())
+      videoRef.current.srcObject = null
+    }
+    setIsCameraActive(false)
+  }
+
+  const capturePhoto = () => {
+    if (videoRef.current && canvasRef.current) {
+      const video = videoRef.current
+      const canvas = canvasRef.current
+      canvas.width = video.videoWidth
+      canvas.height = video.videoHeight
+      const ctx = canvas.getContext('2d')
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+      const base64 = canvas.toDataURL('image/jpeg', 0.8)
+      setFormData(prev => ({ ...prev, photo: base64 }))
+      
+      if (formData.phone.length > 5) {
+        checkReturningVisitor(formData.phone)
+      }
+      stopCamera()
+    }
+  }
+
+  const retakePhoto = () => {
+    setFormData(prev => ({ ...prev, photo: null }))
+    setReturningProfile(null)
+    setFaceCheckDone(false)
+    setFaceMatch('new')
+    startCamera()
+  }
+
+  useEffect(() => {
+    if (!formData.photo && !submitted) {
+      startCamera()
+    }
+    return () => stopCamera()
+  }, [submitted, formData.photo])
+
   const [returningProfile, setReturningProfile] = useState(null)
   const [faceCheckDone, setFaceCheckDone] = useState(false)
   const [faceMatch, setFaceMatch] = useState('new')
@@ -462,13 +591,6 @@ function NewEntryTab({ user, todayEntries, onDone }) {
     return () => { recognitionRef.current?.stop() }
   }, [])
 
-  const handlePhotoChange = async (e) => {
-    const file = e.target.files[0]
-    if (!file) return
-    setPhotoFile(file)
-    const base64 = await compressImageToBase64(file)
-    setFormData(prev => ({ ...prev, photo: base64 }))
-  }
 
   // When phone changes, look up existing profile
   const handlePhoneBlur = async () => {
@@ -559,10 +681,10 @@ function NewEntryTab({ user, todayEntries, onDone }) {
     return <EntrySuccess entry={submitted} todayEntries={todayEntries} onReset={() => {
       setSubmitted(null)
       setFormData({ name: '', phone: '+91', purpose: '', flatGate: '', photo: null })
-      setPhotoFile(null)
       setReturningProfile(null)
       setFaceCheckDone(false)
       setFaceMatch('new')
+      startCamera()
     }} />
   }
 
@@ -604,27 +726,48 @@ function NewEntryTab({ user, todayEntries, onDone }) {
         )}
 
         <form onSubmit={handleSubmit} className="space-y-5">
-          {/* Photo */}
+          {/* Photo Webcam Capture */}
           <div>
             <label className="block text-sm text-slate-400 mb-2">Visitor Photo *</label>
-            <div className="flex gap-4 items-start">
-              <div
-                onClick={() => fileInputRef.current?.click()}
-                className="w-28 h-28 rounded-xl bg-slate-800 border-2 border-dashed border-slate-600 flex items-center justify-center overflow-hidden cursor-pointer hover:border-indigo-500 transition-colors"
-              >
+            <div className="flex gap-4 items-start flex-col sm:flex-row">
+              <div className="relative w-full sm:w-[280px] aspect-[4/3] bg-black rounded-xl overflow-hidden border border-slate-700">
                 {formData.photo ? (
                   <img src={formData.photo} alt="Visitor" className="w-full h-full object-cover" />
                 ) : (
-                  <div className="text-center p-2">
-                    <Camera className="w-6 h-6 text-slate-500 mx-auto mb-1" />
-                    <p className="text-[10px] text-slate-500">Click to upload</p>
-                  </div>
+                  <>
+                    <video ref={videoRef} autoPlay playsInline muted className={`w-full h-full object-cover ${!isCameraActive ? 'hidden' : ''}`} />
+                    {!isCameraActive && !cameraError && (
+                      <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-500 gap-2">
+                        <Loader2 className="w-6 h-6 animate-spin" />
+                        <span className="text-xs">Starting camera...</span>
+                      </div>
+                    )}
+                    {cameraError && (
+                      <div className="absolute inset-0 flex flex-col items-center justify-center text-red-400 bg-red-950/40 p-4 text-center">
+                        <AlertTriangle className="w-6 h-6 mb-2" />
+                        <span className="text-xs">{cameraError}</span>
+                        <button type="button" onClick={startCamera} className="mt-2 text-xs text-red-300 underline">Try Again</button>
+                      </div>
+                    )}
+                  </>
                 )}
+                <canvas ref={canvasRef} className="hidden" />
               </div>
-              <input ref={fileInputRef} type="file" hidden accept="image/*" onChange={handlePhotoChange} />
-              <div className="text-xs text-slate-500 mt-2">
-                <p>Upload a clear photo of the visitor.</p>
-                <p className="mt-1 text-slate-600">Used for face verification on repeat visits.</p>
+              
+              <div className="flex-1 space-y-3 w-full">
+                {formData.photo ? (
+                  <button type="button" onClick={retakePhoto} className="btn-secondary w-full py-2.5 flex items-center justify-center">
+                    <RefreshCw className="w-4 h-4 mr-2" /> Retake Photo
+                  </button>
+                ) : (
+                  <button type="button" onClick={capturePhoto} disabled={!isCameraActive} className="btn-primary w-full py-2.5 flex items-center justify-center disabled:opacity-50 disabled:cursor-not-allowed">
+                    <Camera className="w-4 h-4 mr-2" /> Capture Photo
+                  </button>
+                )}
+                <div className="text-xs text-slate-500">
+                  <p>Capture a clear photo of the visitor.</p>
+                  <p className="mt-1 text-slate-600 border-l-2 border-indigo-500 pl-2">Used for Face Verification on repeat visits.</p>
+                </div>
               </div>
             </div>
           </div>

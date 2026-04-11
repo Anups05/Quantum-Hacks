@@ -4,6 +4,7 @@ import { X, Send, User, Shield, Mic, MicOff, Languages, ChevronDown, Loader2 } f
 import { db } from '../firebase'
 import { doc, onSnapshot, updateDoc, arrayUnion, collection, query, where, getDocs } from 'firebase/firestore'
 import { getTimeAgo } from '../data/mockData'
+import { notifyChatMessage } from '../utils/notificationHelpers'
 
 const SERVER_URL = import.meta.env.VITE_SERVER_URL || 'http://localhost:3001'
 
@@ -250,6 +251,37 @@ export default function VisitorChatModal({ visitorId, visitorName, visitorFlat, 
         })
       })
       setNewMessage('')
+
+      // Notify the other party (fire-and-forget)
+      if (visitorDoc?.societyName) {
+        if (user.role === 'guard') {
+          // Guard sent → notify the resident of that flat (helper looks up UID by flat)
+          notifyChatMessage({
+            societyName: visitorDoc.societyName,
+            fromRole: 'guard',
+            fromName: user.name,
+            fromFlat: null,
+            toFlat: visitorFlat,
+            toUserId: null,
+            messagePreview: text,
+            visitorId,
+          }).catch(console.error)
+        } else {
+          // Resident sent → notify the guard by their UID
+          if (visitorDoc?.enteredBy) {
+            notifyChatMessage({
+              societyName: visitorDoc.societyName,
+              fromRole: 'resident',
+              fromName: user.name,
+              fromFlat: user.flatGate || user.flat || visitorFlat,
+              toUserId: visitorDoc.enteredBy,
+              toFlat: null,
+              messagePreview: text,
+              visitorId,
+            }).catch(console.error)
+          }
+        }
+      }
     } catch (err) { console.error(err) }
     finally { setSending(false) }
   }

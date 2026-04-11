@@ -3,6 +3,7 @@ import {
   updateDoc, getDoc, setDoc, Timestamp, deleteDoc
 } from 'firebase/firestore'
 import { db } from '../firebase'
+import { notifyResidentNewVisitor } from './notificationHelpers'
 
 /** Returns today's date string YYYY-MM-DD in IST */
 export const todayIST = () => {
@@ -105,6 +106,15 @@ export const logVisitorEntry = async ({
     exitTimestamp: null,
   }
   const docRef = await addDoc(collection(db, 'visitors'), entryData)
+  // Fire-and-forget: notify the resident of this flat
+  notifyResidentNewVisitor({
+    societyName,
+    toFlat: flatGate,
+    visitorName: name,
+    purpose,
+    visitorId: docRef.id,
+    guardName,
+  }).catch(console.error)
   return { id: docRef.id, ...entryData }
 }
 

@@ -8,7 +8,7 @@ import {
   Truck, MapPin, Share2, Camera
 } from 'lucide-react'
 import {
-  mockVisitors, mockNotifications, mockRecurringPasses, mockExpectedVisitors,
+  mockVisitors, mockRecurringPasses, mockExpectedVisitors,
   mockBlocklist, mockWatchlist, formatTime, formatDate, formatDateTime,
   getTimeAgo, getStatusColor, getStatusLabel, getRiskBadge, getTrustColor
 } from '../data/mockData'
@@ -16,6 +16,10 @@ import { QRCodeCanvas } from 'qrcode.react'
 import { db } from '../firebase'
 import { doc, updateDoc } from 'firebase/firestore'
 import { validatePhoneFormat, checkPhoneUnique } from '../utils/phoneValidation'
+import {
+  subscribeToUserNotifications, markNotificationRead, markAllNotificationsRead,
+  notifyGuardVisitorApproved, notifyGuardVisitorRejected, notifyGuardVisitorBlocked
+} from '../utils/notificationHelpers'
 import {
   getPendingVisitorsForFlat, getVisitorHistoryForFlat,
   approveVisitor, rejectVisitor, blockVisitor, getTodayEntries,
@@ -40,7 +44,8 @@ export default function ResidentDashboard() {
   const [showPreApprove, setShowPreApprove] = useState(false)
   const [showChat, setShowChat] = useState(null)
   const [showQR, setShowQR] = useState(null)
-  const unreadCount = mockNotifications.filter(n => !n.read).length
+  const [notifications, setNotifications] = useState([])
+  const unreadCount = notifications.filter(n => !n.read).length
 
   const handleProfileUpdate = async (e) => {
     e.preventDefault()
@@ -154,21 +159,62 @@ export default function ResidentDashboard() {
     loadBlocked()
   }, [user])
 
+  // Real-time notification subscription
+  useEffect(() => {
+    if (!user?.uid) return
+    const unsub = subscribeToUserNotifications(user.uid, setNotifications)
+    return () => unsub()
+  }, [user])
+
   const handleApprove = async (visitorId) => {
+    const visitor = pendingVisitors.find(v => v.id === visitorId)
     await approveVisitor(visitorId, user.name)
     setPendingVisitors(prev => prev.filter(v => v.id !== visitorId))
     const updated = await getVisitorHistoryForFlat(user.societyName, user.flatGate.trim().toUpperCase())
     setVisitHistory(updated)
+    // Notify guard
+    if (visitor?.enteredBy) {
+      notifyGuardVisitorApproved({
+        societyName: user.societyName,
+        guardUid: visitor.enteredBy,
+        visitorName: visitor.name,
+        residentName: user.name,
+        flatGate: user.flatGate,
+        visitorId,
+      }).catch(console.error)
+    }
   }
 
   const handleReject = async (visitorId) => {
+    const visitor = pendingVisitors.find(v => v.id === visitorId)
     await rejectVisitor(visitorId)
     setPendingVisitors(prev => prev.filter(v => v.id !== visitorId))
+    if (visitor?.enteredBy) {
+      notifyGuardVisitorRejected({
+        societyName: user.societyName,
+        guardUid: visitor.enteredBy,
+        visitorName: visitor.name,
+        residentName: user.name,
+        flatGate: user.flatGate,
+        visitorId,
+      }).catch(console.error)
+    }
   }
 
   const handleBlock = async (visitorId, visitorData) => {
+    const visitor = pendingVisitors.find(v => v.id === visitorId)
     await blockVisitor(visitorId, visitorData)
     setPendingVisitors(prev => prev.filter(v => v.id !== visitorId))
+    if (visitor?.enteredBy) {
+      notifyGuardVisitorBlocked({
+        societyName: user.societyName,
+        guardUid: visitor.enteredBy,
+        visitorName: visitor.name,
+        residentName: user.name,
+        flatGate: user.flatGate,
+        visitorId,
+      }).catch(console.error)
+    }
   }
 
   const [viewQrId, setViewQrId] = useState(null)
@@ -315,24 +361,62 @@ export default function ResidentDashboard() {
       {/* Notification Dropdown */}
       {showNotifications && (
         <div className="fixed inset-0 z-[60]" onClick={() => setShowNotifications(false)}>
-          <div className="absolute top-[60px] right-4 w-80 glass-card p-0 overflow-hidden animate-fade-in" onClick={e => e.stopPropagation()}>
+          <div className="absolute top-[60px] right-4 w-80 glass-card p-0 overflow-hidden animate-fade-in shadow-2xl" onClick={e => e.stopPropagation()}>
             <div className="p-3 border-b border-slate-800 flex items-center justify-between">
-              <h3 className="text-sm font-semibold text-white">Notifications</h3>
-              <button className="text-xs text-indigo-400 hover:text-indigo-300">Mark all read</button>
+              <h3 className="text-sm font-semibold text-white flex items-center gap-2">
+                Notifications
+                {unreadCount > 0 && <span className="px-1.5 py-0.5 rounded-full bg-indigo-500 text-[10px] text-white font-bold">{unreadCount} new</span>}
+              </h3>
+              {unreadCount > 0 && (
+                <button
+                  onClick={() => markAllNotificationsRead(user.uid)}
+                  className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors"
+                >
+                  Mark all done
+                </button>
+              )}
             </div>
-            <div className="max-h-80 overflow-y-auto">
-              {mockNotifications.map(n => (
-                <div key={n.id} className={`p-3 border-b border-slate-800/50 hover:bg-slate-800/30 cursor-pointer transition-colors ${!n.read ? 'bg-indigo-500/5' : ''}`}>
-                  <div className="flex gap-3">
-                    {!n.read && <div className="w-2 h-2 rounded-full bg-indigo-500 mt-1.5 flex-shrink-0" />}
-                    <div className={!n.read ? '' : 'pl-5'}>
-                      <p className="text-sm text-white font-medium">{n.title}</p>
-                      <p className="text-xs text-slate-400 mt-0.5">{n.message}</p>
-                      <p className="text-[10px] text-slate-600 mt-1">{getTimeAgo(n.timestamp)}</p>
+            <div className="max-h-[420px] overflow-y-auto divide-y divide-slate-800/50">
+              {notifications.length === 0 ? (
+                <div className="p-8 text-center">
+                  <Bell className="w-10 h-10 text-slate-800 mx-auto mb-2" />
+                  <p className="text-slate-500 text-sm">All caught up!</p>
+                  <p className="text-slate-600 text-xs mt-1">Visitor & chat alerts appear here</p>
+                </div>
+              ) : notifications.map(n => {
+                const typeConfig = {
+                  visitor_entry:    { bg: 'bg-amber-500/20',  icon: <Users className="w-3.5 h-3.5 text-amber-400" />,       border: 'border-l-amber-500' },
+                  chat_message:     { bg: 'bg-indigo-500/20', icon: <MessageCircle className="w-3.5 h-3.5 text-indigo-400" />, border: 'border-l-indigo-500' },
+                  visitor_approved: { bg: 'bg-green-500/20',  icon: <CheckCircle className="w-3.5 h-3.5 text-green-400" />,   border: 'border-l-green-500' },
+                  visitor_rejected: { bg: 'bg-red-500/20',    icon: <XCircle className="w-3.5 h-3.5 text-red-400" />,         border: 'border-l-red-500' },
+                  visitor_blocked:  { bg: 'bg-red-600/20',    icon: <Ban className="w-3.5 h-3.5 text-red-500" />,             border: 'border-l-red-600' },
+                }[n.type] || { bg: 'bg-slate-700', icon: <Bell className="w-3.5 h-3.5 text-slate-400" />, border: 'border-l-slate-600' }
+
+                return (
+                  <div
+                    key={n.id}
+                    className={`p-3 hover:bg-slate-800/40 transition-colors border-l-2 ${typeConfig.border} ${!n.read ? 'bg-indigo-500/5' : ''}`}
+                  >
+                    <div className="flex gap-3 items-start">
+                      <div className={`w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5 ${typeConfig.bg}`}>
+                        {typeConfig.icon}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm text-white font-medium leading-snug">{n.title}</p>
+                        <p className="text-xs text-slate-400 mt-0.5 leading-relaxed">{n.message}</p>
+                        <p className="text-[10px] text-slate-600 mt-1">{getTimeAgo(n.createdAt)}</p>
+                      </div>
+                      {!n.read && (
+                        <button
+                          onClick={e => { e.stopPropagation(); markNotificationRead(n.id) }}
+                          className="flex-shrink-0 w-2 h-2 rounded-full bg-indigo-500 hover:bg-indigo-400 transition-colors mt-2"
+                          title="Mark as done"
+                        />
+                      )}
                     </div>
                   </div>
-                </div>
-              ))}
+                )
+              })}
             </div>
           </div>
         </div>
