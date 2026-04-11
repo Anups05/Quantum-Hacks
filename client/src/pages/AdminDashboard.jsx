@@ -517,18 +517,73 @@ function VisitorsSection({ societyVisitors, societyGuards }) {
     return guard ? guard.name || guard.email : 'Unknown Guard'
   }
 
-  // Display only real visitors, reversed so newest is first
-  const displayVisitors = [...(societyVisitors || [])].reverse()
+  const [searchQuery, setSearchQuery] = useState('')
+  const [statusFilter, setStatusFilter] = useState('All')
+
+  // Statuses to hide entirely
+  const HIDDEN_STATUSES = ['pre_approved_active', 'expected', 'preapproved']
+
+  // Exclude pre-approved / expected entries, then apply search + status filters
+  const displayVisitors = [...(societyVisitors || [])]
+    .reverse()
+    .filter(v => !HIDDEN_STATUSES.includes(v.status?.toLowerCase()) && v.source !== 'preapproved' && v.type !== 'preapproved')
+    .filter(v => {
+      if (statusFilter !== 'All' && v.status?.toLowerCase() !== statusFilter.toLowerCase()) return false
+      if (!searchQuery.trim()) return true
+      const q = searchQuery.toLowerCase()
+      return (
+        v.name?.toLowerCase().includes(q) ||
+        v.phone?.toLowerCase().includes(q) ||
+        (v.flatGate || v.flat || '').toLowerCase().includes(q)
+      )
+    })
+
+  const exportPDF = () => {
+    const rows = displayVisitors.map(v => `
+      <tr>
+        <td>${v.name || '—'}</td>
+        <td>${v.phone || '—'}</td>
+        <td>${v.purpose || '—'}</td>
+        <td>${v.flatGate || v.flat || '—'}</td>
+        <td>${v.status || '—'}</td>
+        <td>${v.entryTimestamp ? new Date(v.entryTimestamp).toLocaleString('en-IN') : '—'}</td>
+        <td>${getGuardName(v.enteredBy)}</td>
+      </tr>`).join('')
+
+    const html = `
+      <html><head><title>Visitor Report</title>
+      <style>
+        body { font-family: Arial, sans-serif; font-size: 12px; color: #111; }
+        h2 { margin-bottom: 8px; }
+        p { margin: 0 0 12px; color: #555; font-size: 11px; }
+        table { width: 100%; border-collapse: collapse; }
+        th { background: #1e293b; color: #fff; text-align: left; padding: 8px; font-size: 11px; }
+        td { border-bottom: 1px solid #e2e8f0; padding: 7px 8px; }
+        tr:nth-child(even) td { background: #f8fafc; }
+      </style></head>
+      <body>
+        <h2>Visitor Report</h2>
+        <p>Generated: ${new Date().toLocaleString('en-IN')} &nbsp;|&nbsp; ${displayVisitors.length} records</p>
+        <table>
+          <thead><tr>
+            <th>Visitor</th><th>Phone</th><th>Purpose</th><th>Flat</th><th>Status</th><th>Entry Time</th><th>Guard</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </body></html>`
+
+    const win = window.open('', '_blank')
+    win.document.write(html)
+    win.document.close()
+    win.print()
+  }
 
   return (
     <div className="animate-fade-in space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <h2 className="text-lg font-bold text-white">All Visitors</h2>
         <div className="flex items-center gap-2">
-          <button className="btn-outline text-xs py-2 px-3">
-            <Filter className="w-3.5 h-3.5" /> Filter
-          </button>
-          <button className="btn-outline text-xs py-2 px-3">
+          <button onClick={exportPDF} className="btn-outline text-xs py-2 px-3 flex items-center gap-1.5">
             <Download className="w-3.5 h-3.5" /> Export PDF
           </button>
         </div>
@@ -537,21 +592,25 @@ function VisitorsSection({ societyVisitors, societyGuards }) {
       <div className="flex gap-2">
         <div className="relative flex-1">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
-          <input type="text" placeholder="Search by name, phone, or flat..." className="input-field pl-10" />
+          <input
+            type="text"
+            placeholder="Search by name, phone, or flat..."
+            className="input-field pl-10"
+            value={searchQuery}
+            onChange={e => setSearchQuery(e.target.value)}
+          />
         </div>
-        <select className="input-field w-auto">
-          <option>All Status</option>
-          <option>Pending</option>
-          <option>Approved</option>
-          <option>Rejected</option>
-          <option>Inside</option>
-          <option>Exited</option>
-        </select>
-        <select className="input-field w-auto">
-          <option>All Risk</option>
-          <option>Low</option>
-          <option>Medium</option>
-          <option>High</option>
+        <select
+          className="input-field w-auto"
+          value={statusFilter}
+          onChange={e => setStatusFilter(e.target.value)}
+        >
+          <option value="All">All Status</option>
+          <option value="pending">Pending</option>
+          <option value="approved">Approved</option>
+          <option value="rejected">Rejected</option>
+          <option value="inside">Inside</option>
+          <option value="exited">Exited</option>
         </select>
       </div>
 
@@ -566,14 +625,16 @@ function VisitorsSection({ societyVisitors, societyGuards }) {
                 <th className="text-left text-xs text-slate-500 font-medium px-4 py-3">Purpose</th>
                 <th className="text-left text-xs text-slate-500 font-medium px-4 py-3">Flat</th>
                 <th className="text-left text-xs text-slate-500 font-medium px-4 py-3">Status</th>
-                <th className="text-left text-xs text-slate-500 font-medium px-4 py-3">Trust</th>
-                <th className="text-left text-xs text-slate-500 font-medium px-4 py-3">Risk</th>
                 <th className="text-left text-xs text-slate-500 font-medium px-4 py-3">Time</th>
                 <th className="text-left text-xs text-slate-500 font-medium px-4 py-3">Guard</th>
               </tr>
             </thead>
             <tbody>
-              {displayVisitors.map(v => (
+              {displayVisitors.length === 0 ? (
+                <tr>
+                  <td colSpan={7} className="px-4 py-10 text-center text-sm text-slate-500">No visitors found.</td>
+                </tr>
+              ) : displayVisitors.map(v => (
                 <tr key={v.id} onClick={() => setSelectedVisitor(v)} className="border-b border-slate-800/50 hover:bg-slate-800/30 cursor-pointer transition-colors">
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-2">
@@ -588,15 +649,6 @@ function VisitorsSection({ societyVisitors, societyGuards }) {
                   <td className="px-4 py-3 text-sm text-slate-400">{v.purpose}</td>
                   <td className="px-4 py-3 text-sm text-slate-400">{v.flatGate || v.flat}</td>
                   <td className="px-4 py-3"><span className={`badge ${getStatusColor(v.status)}`}>{getStatusLabel(v.status)}</span></td>
-                  <td className="px-4 py-3">
-                    <div className="flex items-center gap-1.5">
-                      <div className="w-12 h-1.5 rounded-full bg-slate-800">
-                        <div className="h-full rounded-full" style={{ width: `${v.trustScore || 85}%`, backgroundColor: getTrustColor(v.trustScore || 85) }} />
-                      </div>
-                      <span className="text-xs" style={{ color: getTrustColor(v.trustScore || 85) }}>{v.trustScore || 85}</span>
-                    </div>
-                  </td>
-                  <td className="px-4 py-3"><span className={`badge ${getRiskBadge(v.riskLevel || 'Low')}`}>{v.riskLevel || 'Low'}</span></td>
                   <td className="px-4 py-3 text-xs text-slate-500">{getTimeAgo(v.entryTimestamp)}</td>
                   <td className="px-4 py-3 text-xs text-slate-400">{getGuardName(v.enteredBy)}</td>
                 </tr>
@@ -626,7 +678,6 @@ function VisitorsSection({ societyVisitors, societyGuards }) {
                   <p className="text-sm text-slate-400">{selectedVisitor.phone}</p>
                   <div className="flex gap-2 mt-1">
                     <span className={`badge ${getStatusColor(selectedVisitor.status)}`}>{getStatusLabel(selectedVisitor.status)}</span>
-                    <span className={`badge ${getRiskBadge(selectedVisitor.riskLevel || 'Low')}`}>{selectedVisitor.riskLevel || 'Low'} Risk</span>
                   </div>
                 </div>
               </div>
@@ -636,8 +687,7 @@ function VisitorsSection({ societyVisitors, societyGuards }) {
                   { label: 'Flat', value: selectedVisitor.flatGate || selectedVisitor.flat },
                   { label: 'Guard', value: getGuardName(selectedVisitor.enteredBy) },
                   { label: 'Gate', value: selectedVisitor.gate || 'Main Gate' },
-                  { label: 'Trust Score', value: `${selectedVisitor.trustScore || 85}/100` },
-                  { label: 'Face Match', value: selectedVisitor.faceMatch || '98%' },
+                  { label: 'Face Match', value: selectedVisitor.faceMatch || '—' },
                   { label: 'Entry Time', value: selectedVisitor.entryTimestamp ? formatDateTime(selectedVisitor.entryTimestamp) : '—' },
                   { label: 'Exit Time', value: selectedVisitor.exitTimestamp ? formatDateTime(selectedVisitor.exitTimestamp) : '—' },
                 ].map((field, i) => (

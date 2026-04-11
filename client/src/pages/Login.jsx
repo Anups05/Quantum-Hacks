@@ -1,125 +1,17 @@
 import { useState } from 'react'
-import { Shield, Eye, UserCheck, Lock, Mail, User, Building, Phone, ChevronRight, Search } from 'lucide-react'
+import { Shield, Eye, UserCheck, Lock, Mail, User, Building, Phone, ChevronRight } from 'lucide-react'
 import { auth, db } from '../firebase'
-import { signInWithEmailAndPassword, createUserWithEmailAndPassword, updateProfile } from 'firebase/auth'
+import { signInWithEmailAndPassword, createUserWithEmailAndPassword, updateProfile, signInWithPopup, GoogleAuthProvider } from 'firebase/auth'
 import { doc, setDoc } from 'firebase/firestore'
 import { validatePhoneFormat, checkPhoneUnique } from '../utils/phoneValidation'
-import { MapContainer, TileLayer, Marker, useMapEvents, useMap, Popup } from 'react-leaflet'
-import 'leaflet/dist/leaflet.css'
-import L from 'leaflet'
-import markerIcon2x from 'leaflet/dist/images/marker-icon-2x.png'
-import markerIcon from 'leaflet/dist/images/marker-icon.png'
-import markerShadow from 'leaflet/dist/images/marker-shadow.png'
 
-// Fix default leafet markers
-delete L.Icon.Default.prototype._getIconUrl
-L.Icon.Default.mergeOptions({
-  iconRetinaUrl: markerIcon2x,
-  iconUrl: markerIcon,
-  shadowUrl: markerShadow
-})
-
-function LocationPicker({ location, setLocation, setAddress }) {
-  const map = useMapEvents({
-    click: async (e) => {
-      const lat = e.latlng.lat
-      const lng = e.latlng.lng
-      setLocation({ lat, lng })
-      try {
-        const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}`)
-        const data = await res.json()
-        setAddress(data.display_name || `${lat.toFixed(4)}, ${lng.toFixed(4)}`)
-      } catch (err) {
-        console.error('Geocoding error:', err)
-        setAddress(`${lat.toFixed(4)}, ${lng.toFixed(4)}`)
-      }
-    }
-  })
-
-  // Auto-center on user's location on first load
-  useState(() => {
-    map.locate()
-    map.on('locationfound', async (e) => {
-      map.flyTo(e.latlng, map.getZoom())
-      if (!location) {
-        const lat = e.latlng.lat
-        const lng = e.latlng.lng
-        setLocation({ lat, lng })
-        try {
-          const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}`)
-          const data = await res.json()
-          setAddress(data.display_name || `${lat.toFixed(4)}, ${lng.toFixed(4)}`)
-        } catch (err) {}
-      }
-    })
-  }, [map])
-
-  return location === null ? null : (
-    <Marker position={[location.lat, location.lng]}>
-      <Popup>Society Location Set Here</Popup>
-    </Marker>
-  )
-}
-
-function MapSearch({ setLocation, setAddress }) {
-  const map = useMap()
-  const [query, setQuery] = useState('')
-  const [isSearching, setIsSearching] = useState(false)
-
-  const handleSearch = async (e) => {
-    if (e) e.preventDefault()
-    if (!query) return
-    setIsSearching(true)
-    try {
-      const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=1`)
-      const data = await res.json()
-      if (data && data.length > 0) {
-        const lat = parseFloat(data[0].lat)
-        const lng = parseFloat(data[0].lon)
-        map.flyTo([lat, lng], 18) // High zoom to see buildings
-        setLocation({ lat, lng })
-        setAddress(data[0].display_name)
-      } else {
-        alert('Building not found. Try a different search term.')
-      }
-    } catch (err) {
-      console.error('Search error:', err)
-      alert('Error searching for location.')
-    } finally {
-      setIsSearching(false)
-    }
-  }
-
-  return (
-    <div className="absolute top-2 left-1/2 -translate-x-1/2 z-[1000] w-11/12 max-w-sm">
-      <div className="flex relative shadow-lg rounded-md overflow-hidden shadow-black/20">
-        <input 
-          type="text" 
-          value={query} 
-          onChange={e => setQuery(e.target.value)} 
-          onKeyDown={(e) => { if (e.key === 'Enter') handleSearch(e); }}
-          placeholder="Search building..." 
-          className="w-full px-3 py-2 text-sm bg-white text-slate-800 border-none outline-none placeholder:text-slate-500"
-        />
-        <button 
-          type="button" 
-          onClick={handleSearch}
-          disabled={isSearching}
-          className="bg-indigo-500 text-white px-3 hover:bg-indigo-600 transition-colors flex items-center justify-center disabled:opacity-50"
-        >
-          {isSearching ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"/> : <Search className="w-4 h-4 text-white" />}
-        </button>
-      </div>
-    </div>
-  )
-}
+const googleProvider = new GoogleAuthProvider()
 
 export default function Login() {
   const [isRegister, setIsRegister] = useState(false)
   const [selectedRole, setSelectedRole] = useState(null)
   const [loading, setLoading] = useState(false)
   const [errorMsg, setErrorMsg] = useState('')
-  const [mapLocation, setMapLocation] = useState(null)
 
   const [formData, setFormData] = useState({
     name: '',
@@ -130,22 +22,21 @@ export default function Login() {
     flatGate: ''
   })
 
-
   const roles = [
     {
       id: 'guard', label: 'Security Guard', icon: Shield,
-      desc: 'Log visitors',
-      color: 'from-blue-500 to-cyan-500', bgGlow: 'rgba(14, 165, 233, 0.15)',
+      desc: 'Log visitors, scan QR codes',
+      color: 'from-blue-500 to-cyan-500',
     },
     {
       id: 'resident', label: 'Resident', icon: UserCheck,
-      desc: 'Approve visitors',
-      color: 'from-indigo-500 to-purple-500', bgGlow: 'rgba(99, 102, 241, 0.15)',
+      desc: 'Approve visitors, view history',
+      color: 'from-indigo-500 to-purple-500',
     },
     {
       id: 'admin', label: 'Society Admin', icon: Eye,
-      desc: 'Analytics, alerts',
-      color: 'from-amber-500 to-orange-500', bgGlow: 'rgba(245, 158, 11, 0.15)',
+      desc: 'Analytics, alerts, security',
+      color: 'from-amber-500 to-orange-500',
     },
   ]
 
@@ -168,45 +59,45 @@ export default function Login() {
         if (!validatePhoneFormat(formData.phoneNumber)) {
           throw new Error('Phone number must be +91 followed by 10 digits.')
         }
-
-        // Check if phone unique FIRST
-        const isUnique = await checkPhoneUnique(formData.phoneNumber)
-        if (!isUnique) {
-          throw new Error('This phone number is already registered.')
+        if (!formData.societyName.trim()) {
+          throw new Error('Please enter your Society / Building name.')
         }
 
-        // Lock App.jsx routing engine
+        // Lock App.jsx routing engine so it doesn't redirect mid-save
         localStorage.setItem('isLocalRegister', 'true')
-        
-        // Register flow - create auth
+
+        // Create Auth account
         const userCredential = await createUserWithEmailAndPassword(auth, formData.email, formData.password)
         const user = userCredential.user
 
-        // Fix missing Name display - Update Auth Profile
+        // Update display name
         await updateProfile(user, { displayName: formData.name })
 
         try {
+          // Verify phone uniqueness (needs auth token for Firestore read)
+          const isUnique = await checkPhoneUnique(formData.phoneNumber)
+          if (!isUnique) {
+            throw new Error('This phone number is already registered.')
+          }
+
           const status = selectedRole === 'admin' ? 'approved' : 'pending'
 
-          // Save extra data to Firestore
+          // Save user profile to Firestore
           await setDoc(doc(db, 'users', user.uid), {
             uid: user.uid,
             name: formData.name,
             email: formData.email,
             role: selectedRole,
             phoneNumber: formData.phoneNumber,
-            societyName: formData.societyName,
-            location: mapLocation || null,
-            flatGate: formData.flatGate,
+            societyName: formData.societyName.trim(),
+            flatGate: formData.flatGate.trim().toUpperCase(),
             status: status,
             createdAt: new Date().toISOString()
           })
         } catch (dbError) {
           localStorage.removeItem('isLocalRegister')
-          // Let the user remain authenticated so they can manually retry or route to complete-profile 
-          // if it was a transient failure. Log it fully so we know if there's a Firebase rule block!
-          console.error("Firestore Registration DB Error:", dbError)
-          throw new Error("Database Configuration Error. You can complete your profile securely via the generic login flow. System Error: " + dbError.message)
+          console.error('Firestore Registration DB Error:', dbError)
+          throw new Error('Registration failed: ' + dbError.message)
         }
       } else {
         // Login flow
@@ -224,7 +115,6 @@ export default function Login() {
     setErrorMsg('')
     try {
       await signInWithPopup(auth, googleProvider)
-      // Rest of the flow (redirecting to complete profile if necessary) is handled by App.jsx
     } catch (error) {
       setErrorMsg(error.message)
     } finally {
@@ -251,7 +141,7 @@ export default function Login() {
             Secure<span className="text-gradient">Gate</span>
           </h1>
           <p className="text-slate-400 text-sm">
-            Intelligent Visitor Security & Entry Management
+            Intelligent Visitor Security &amp; Entry Management
           </p>
         </div>
 
@@ -261,7 +151,7 @@ export default function Login() {
           </h2>
 
           {errorMsg && (
-            <div className="bg-red-500/10 border border-red-500/50 text-red-500 text-sm p-3 rounded-lg mb-4">
+            <div className="bg-red-500/10 border border-red-500/50 text-red-400 text-sm p-3 rounded-lg mb-4">
               {errorMsg}
             </div>
           )}
@@ -302,37 +192,23 @@ export default function Login() {
                     <input type="tel" name="phoneNumber" required placeholder="+91 98765 43210" className="input-field pl-10" value={formData.phoneNumber} onChange={handleChange} />
                   </div>
                 </div>
+
                 <div>
-                  <label className="block text-sm text-slate-400 mb-1.5">Locate Your Society/Building *</label>
-                  <p className="text-xs text-slate-500 mb-2">Pinpoint your building to auto-join the correct community.</p>
-                  <div className="h-64 w-full rounded-xl overflow-hidden border border-slate-700/50 relative z-0 mb-2">
-                    <MapContainer center={[20.5937, 78.9629]} zoom={4} style={{ height: '100%', width: '100%' }}>
-                      <TileLayer
-                        attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-                        url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-                        maxZoom={19}
-                      />
-                      <MapSearch setLocation={setMapLocation} setAddress={(addr) => setFormData(prev => ({...prev, societyName: addr}))} />
-                      <LocationPicker 
-                        location={mapLocation} 
-                        setLocation={setMapLocation}
-                        setAddress={(address) => setFormData(prev => ({...prev, societyName: address}))} 
-                      />
-                    </MapContainer>
-                  </div>
+                  <label className="block text-sm text-slate-400 mb-1.5">Society / Building Name</label>
                   <div className="relative">
                     <Building className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
-                    <input type="text" name="societyName" required readOnly placeholder="Geocoded Address" className="input-field pl-10 bg-slate-800/80 text-xs" value={formData.societyName} onChange={handleChange} />
+                    <input type="text" name="societyName" required placeholder="e.g. Green Valley Apartments" className="input-field pl-10" value={formData.societyName} onChange={handleChange} />
                   </div>
                 </div>
+
                 <div>
-                  <label className="block text-sm text-slate-400 mb-1.5">Flat / Gate (if applicable)</label>
+                  <label className="block text-sm text-slate-400 mb-1.5">Flat / Gate</label>
                   <div className="relative">
                     <Building className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
                     <input type="text" name="flatGate" required placeholder="e.g. A-302 or Main Gate" className="input-field pl-10" value={formData.flatGate} onChange={handleChange} />
                   </div>
                 </div>
-                
+
                 {/* Role Selection */}
                 <div>
                   <label className="block text-sm text-slate-400 mb-2">Select Role</label>
@@ -404,7 +280,7 @@ export default function Login() {
 
           <div className="mt-6 text-center">
             <button
-              onClick={() => { setIsRegister(!isRegister); setErrorMsg(''); }}
+              onClick={() => { setIsRegister(!isRegister); setErrorMsg('') }}
               className="text-sm text-indigo-400 hover:text-indigo-300 transition-colors"
             >
               {isRegister ? 'Already have an account? Sign In' : "Don't have an account? Register"}

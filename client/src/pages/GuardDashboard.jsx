@@ -1,4 +1,4 @@
-import { useState, useContext, useEffect, useRef } from 'react'
+import { useState, useContext, useEffect, useRef, useMemo } from 'react'
 import { AuthContext } from '../App'
 import {
   Shield, LogOut, Plus, QrCode, Camera, AlertTriangle,
@@ -7,7 +7,7 @@ import {
   ScanLine, LogIn, DoorOpen, RefreshCw, MessageCircle,
   Mic, MicOff, Loader2
 } from 'lucide-react'
-import { mockAlerts, getTimeAgo, getStatusColor, getStatusLabel } from '../data/mockData'
+import { getTimeAgo, getStatusColor, getStatusLabel } from '../data/mockData'
 import { QRCodeSVG } from 'qrcode.react'
 import { validatePhoneFormat } from '../utils/phoneValidation'
 import {
@@ -216,6 +216,80 @@ function HomeTab({ user, todayEntries, expectedVisitors, loading, setTodayEntrie
     setTodayEntries(prev => prev.map(v => v.id === updatedId ? { ...v, status: newStatus } : v))
   }
 
+  // Real-time alerts computed from today's entries
+  const activeAlerts = useMemo(() => {
+    if (!todayEntries || todayEntries.length === 0) return []
+    const alertsMap = new Map()
+
+    todayEntries.forEach(v => {
+      // 1. Face Mismatch
+      if (v.faceMatch === 'mismatch' || v.faceMatch === 'failed') {
+        const id = `mismatch-${v.id}`
+        alertsMap.set(id, {
+          id, type: 'critical',
+          title: 'Face Mismatch Detected',
+          message: `"${v.name}" photo mismatch — Flat ${v.flatGate}.`,
+          timestamp: v.entryTimestamp || new Date().toISOString(),
+        })
+      }
+
+      // 2. Late Night Entry (12am–5am IST)
+      if (v.entryTimestamp) {
+        const d = new Date(v.entryTimestamp)
+        const istHours = (d.getUTCHours() + 5.5) % 24
+        if (istHours >= 0 && istHours < 5) {
+          const id = `latenight-${v.id}`
+          alertsMap.set(id, {
+            id, type: 'warning',
+            title: 'Late Night Entry',
+            message: `"${v.name}" entered at ${d.toLocaleTimeString('en-IN')} → Flat ${v.flatGate}.`,
+            timestamp: v.entryTimestamp,
+          })
+        }
+      }
+    })
+
+    // 3. Multi-Flat Activity (same phone → multiple flats)
+    const phoneMap = {}
+    todayEntries.forEach(v => {
+      if (!v.phone || !v.flatGate) return
+      if (!phoneMap[v.phone]) phoneMap[v.phone] = { flats: new Set(), visitor: v }
+      phoneMap[v.phone].flats.add(v.flatGate)
+    })
+    Object.entries(phoneMap).forEach(([phone, data]) => {
+      if (data.flats.size > 1) {
+        const id = `multi-${phone.replace(/\D/g, '')}`
+        alertsMap.set(id, {
+          id, type: 'warning',
+          title: 'Multi-Flat Activity',
+          message: `Phone ${phone} visited ${data.flats.size} flats: ${[...data.flats].join(', ')}.`,
+          timestamp: data.visitor.entryTimestamp || new Date().toISOString(),
+        })
+      }
+    })
+
+    // 4. Repeated Rejections (same phone ≥ 2 rejections today)
+    const rejectionMap = {}
+    todayEntries.forEach(v => {
+      if (v.status === 'rejected' && v.phone) {
+        rejectionMap[v.phone] = (rejectionMap[v.phone] || 0) + 1
+      }
+    })
+    Object.entries(rejectionMap).forEach(([phone, count]) => {
+      if (count >= 2) {
+        const id = `reject-${phone.replace(/\D/g, '')}`
+        alertsMap.set(id, {
+          id, type: 'critical',
+          title: 'Repeated Rejections',
+          message: `Phone ${phone} was rejected ${count} times today.`,
+          timestamp: new Date().toISOString(),
+        })
+      }
+    })
+
+    return [...alertsMap.values()].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
+  }, [todayEntries])
+
   return (
     <>
       {/* Stats */}
@@ -257,20 +331,21 @@ function HomeTab({ user, todayEntries, expectedVisitors, loading, setTodayEntrie
             </div>
             <span className="text-xs text-slate-500">Alerts</span>
           </div>
-          <p className="text-2xl font-bold text-white">{mockAlerts.filter(a => !a.resolved).length}</p>
+          <p className="text-2xl font-bold text-white">{loading ? '—' : activeAlerts.filter(a => a.type === 'critical').length}</p>
           <p className="text-xs text-slate-500">Active Alerts</p>
         </div>
       </div>
 
-      {/* Active Alerts (mock) */}
-      {mockAlerts.filter(a => !a.resolved).length > 0 && (
+      {/* Real-time Active Alerts */}
+      {activeAlerts.length > 0 && (
         <div className="glass-card p-4">
           <div className="flex items-center gap-2 mb-3">
             <AlertTriangle className="w-4 h-4 text-red-400" />
             <h3 className="text-sm font-semibold text-white">Active Alerts</h3>
+            <span className="ml-auto text-[10px] text-slate-500 bg-slate-800 px-2 py-0.5 rounded-full">{activeAlerts.length} live</span>
           </div>
           <div className="space-y-2">
-            {mockAlerts.filter(a => !a.resolved).map(alert => (
+            {activeAlerts.map(alert => (
               <div key={alert.id} className={`flex items-start gap-3 p-3 rounded-xl border ${
                 alert.type === 'critical' ? 'bg-red-500/5 border-red-500/20' : 'bg-amber-500/5 border-amber-500/20'
               }`}>
