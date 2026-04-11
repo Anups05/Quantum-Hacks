@@ -21,7 +21,8 @@ import {
   approveVisitor, rejectVisitor, blockVisitor, getTodayEntries,
   createPreApprovedPass, compressImageToBase64,
   getPreApprovedPassesForFlat, deletePreApprovedPass,
-  getExpectedVisitorsForFlat, createExpectedVisitor
+  getExpectedVisitorsForFlat, createExpectedVisitor,
+  getBlockedVisitorsByFlat, unblockVisitor, removeVisitorEntry
 } from '../utils/visitorHelpers'
 import VisitorChatModal from '../components/VisitorChatModal'
 
@@ -113,6 +114,8 @@ export default function ResidentDashboard() {
   const [showExpectedModal, setShowExpectedModal] = useState(false)
   const [expectedVisitors, setExpectedVisitors] = useState([])
   const [chatVisitor, setChatVisitor] = useState(null)
+  const [blockedVisitors, setBlockedVisitors] = useState([])
+  const [loadingBlocked, setLoadingBlocked] = useState(false)
 
   // Load real visitor data
   useEffect(() => {
@@ -136,6 +139,20 @@ export default function ResidentDashboard() {
     }
     load()
   }, [user, showPreApprove, showExpectedModal])
+
+  // Load blocked visitors separately
+  useEffect(() => {
+    if (!user?.societyName || !user?.flatGate) return
+    const loadBlocked = async () => {
+      setLoadingBlocked(true)
+      try {
+        const safeFlat = user.flatGate.trim().toUpperCase()
+        const blocked = await getBlockedVisitorsByFlat(user.societyName, safeFlat)
+        setBlockedVisitors(blocked)
+      } catch(e) { console.error(e) } finally { setLoadingBlocked(false) }
+    }
+    loadBlocked()
+  }, [user])
 
   const handleApprove = async (visitorId) => {
     await approveVisitor(visitorId, user.name)
@@ -236,7 +253,7 @@ export default function ResidentDashboard() {
             </div>
             <div>
               <h1 className="text-sm font-bold text-white leading-tight">SecureGate</h1>
-              <p className="text-[10px] text-slate-500">Flat {user.flat} • Resident</p>
+              <p className="text-[10px] text-slate-500">Flat {user.flatGate || user.flat} • Resident</p>
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -252,8 +269,12 @@ export default function ResidentDashboard() {
               )}
             </button>
             <div className="flex items-center gap-2 pl-2 border-l border-slate-700">
-              <div className="w-8 h-8 rounded-lg bg-purple-500/20 text-purple-400 flex items-center justify-center text-xs font-bold">
+              <div className="w-8 h-8 rounded-lg bg-purple-500/20 text-purple-400 flex items-center justify-center text-xs font-bold shrink-0">
                 {user?.name?.split(' ').map(n => n.charAt(0)).join('').substring(0, 2).toUpperCase() || 'U'}
+              </div>
+              <div className="hidden sm:block">
+                <p className="text-xs font-semibold text-white leading-tight">{user?.name?.split(' ')[0] || 'Resident'}</p>
+                <p className="text-[10px] text-slate-500">Flat {user.flatGate || user.flat}</p>
               </div>
               <button onClick={logout} className="p-2 rounded-xl text-slate-500 hover:text-red-400 transition-colors">
                 <LogOut className="w-4 h-4" />
@@ -461,32 +482,48 @@ export default function ResidentDashboard() {
               </div>
             )}
 
-            {visitHistory.filter(v => ['approved', 'rejected', 'blocked'].includes(v.status)).length > 0 && (
+            {visitHistory.length > 0 && (
               <>
                 <h3 className="text-sm font-semibold text-slate-500 uppercase tracking-wider mt-6">Recently Handled</h3>
-                {visitHistory.filter(v => ['approved', 'rejected', 'blocked'].includes(v.status)).slice(0, 5).map(visitor => (
-                  <div key={visitor.id} className="glass-card p-4 opacity-80">
+                {[...visitHistory]
+                  .sort((a, b) => new Date(b.entryTimestamp) - new Date(a.entryTimestamp))
+                  .map(visitor => (
+                  <div key={visitor.id} className="glass-card p-4 hover:border-slate-600/60 transition-colors">
                     <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 rounded-xl bg-slate-800 border border-slate-700 flex items-center justify-center flex-shrink-0 overflow-hidden">
+                      <div className="w-11 h-11 rounded-xl bg-slate-800 border border-slate-700 flex items-center justify-center flex-shrink-0 overflow-hidden">
                         {visitor.photo
                           ? <img src={visitor.photo} alt={visitor.name} className="w-full h-full object-cover" />
-                          : <span className="text-sm font-bold text-slate-500">{visitor.name?.charAt(0)}</span>
+                          : <span className="text-sm font-bold text-slate-500">{visitor.name?.charAt(0)?.toUpperCase()}</span>
                         }
                       </div>
-                      <div className="flex-1">
-                        <p className="text-sm text-white">{visitor.name}</p>
-                        <p className="text-xs text-slate-500">{visitor.purpose} • {visitor.phone} • {getTimeAgo(visitor.entryTimestamp)}</p>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <p className="text-sm font-semibold text-white">{visitor.name}</p>
+                          <span className={`badge text-[10px] ${
+                            visitor.status === 'approved' ? 'badge-info' :
+                            visitor.status === 'rejected' ? 'badge-danger' :
+                            visitor.status === 'inside' ? 'badge-success' :
+                            visitor.status === 'exited' ? 'bg-slate-700 text-slate-300' :
+                            visitor.status === 'blocked' ? 'badge-warning' : 'badge-warning'
+                          }`}>{visitor.status}</span>
+                        </div>
+                        <p className="text-xs text-slate-500 mt-0.5 truncate">
+                          {visitor.purpose} &bull; {visitor.phone} &bull; {getTimeAgo(visitor.entryTimestamp)}
+                        </p>
+                        {visitor.guardName && (
+                          <p className="text-[10px] text-slate-600 mt-0.5">
+                            Guard: <span className="text-slate-400">{visitor.guardName}</span>
+                          </p>
+                        )}
                       </div>
-                      <div className="flex flex-col items-end gap-1">
-                        <span className={`badge ${
-                          visitor.status === 'approved' ? 'badge-info' :
-                          visitor.status === 'rejected' ? 'badge-danger' : 'badge-warning'
-                        }`}>{visitor.status}</span>
-                        <button onClick={() => setChatVisitor({ id: visitor.id, name: visitor.name })} className="p-1.5 rounded-lg text-slate-400 hover:text-indigo-400 hover:bg-slate-800 transition-colors relative" title="Message Security">
-                          <MessageCircle className="w-4 h-4" />
-                          {visitor.messages?.length > 0 && <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-indigo-500" />}
-                        </button>
-                      </div>
+                      <button
+                        onClick={() => setChatVisitor({ id: visitor.id, name: visitor.name })}
+                        className="p-1.5 rounded-lg text-slate-400 hover:text-indigo-400 hover:bg-slate-800 transition-colors relative flex-shrink-0"
+                        title="Message Security"
+                      >
+                        <MessageCircle className="w-4 h-4" />
+                        {visitor.messages?.length > 0 && <span className="absolute top-0.5 right-0.5 w-2 h-2 rounded-full bg-indigo-500 border border-slate-900" />}
+                      </button>
                     </div>
                     {visitor.status === 'approved' && visitor.qrToken && (
                       <div className="mt-3 bg-slate-900 border border-indigo-500/30 rounded-lg p-2 text-center flex items-center justify-center gap-2">
@@ -582,20 +619,38 @@ export default function ResidentDashboard() {
               </h3>
               {activePasses.length === 0 ? (
                 <div className="text-center py-8 bg-slate-800/30 rounded-xl border border-dashed border-slate-700">
-                  <p className="text-slate-400 text-sm">No active passes found.</p>
+                  <p className="text-slate-400 text-sm">No passes found. Create one with + New Pass.</p>
                 </div>
-              ) : activePasses.map(pass => (
-                <div key={pass.id} className={`glass-card p-4 mb-3`}>
+              ) : activePasses.map(pass => {
+                const now = new Date()
+                const isExpired = pass.validUntil && new Date(pass.validUntil) < now
+                const isInside = pass.status === 'inside'
+                const isActive = pass.status === 'pre_approved_active' && !isExpired
+                return (
+                <div key={pass.id} className={`glass-card p-4 mb-3 border ${
+                  isInside ? 'border-green-500/30' : isExpired ? 'border-slate-700/30 opacity-60' : 'border-slate-700/50'
+                }`}>
                   <div className="flex items-start justify-between">
                     <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 rounded-xl bg-green-500/15 flex items-center justify-center">
-                        <User className="w-5 h-5 text-green-400" />
+                      <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${
+                        isInside ? 'bg-green-500/15' : isExpired ? 'bg-slate-700/30' : 'bg-green-500/15'
+                      }`}>
+                        <User className={`w-5 h-5 ${isInside ? 'text-green-400' : isExpired ? 'text-slate-500' : 'text-green-400'}`} />
                       </div>
                       <div>
-                        <p className="text-sm font-medium text-white">{pass.name} <span className="text-xs text-slate-400">({pass.purpose})</span></p>
-                        <p className="text-xs text-slate-500">{pass.phone}</p>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <p className="text-sm font-medium text-white">{pass.name}</p>
+                          <span className={`badge text-[10px] ${
+                            isInside ? 'badge-success' : isExpired ? 'bg-slate-700 text-slate-400' : 'badge-info'
+                          }`}>
+                            {isInside ? 'Inside Now' : isExpired ? 'Expired' : 'Active'}
+                          </span>
+                        </div>
+                        <p className="text-xs text-slate-500">{pass.phone} &bull; {pass.purpose}</p>
                         <p className="text-xs text-slate-500 mt-1">
-                          Valid: {new Date(pass.validFrom).toLocaleDateString()} {new Date(pass.validFrom).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})} - {new Date(pass.validUntil).toLocaleDateString()} {new Date(pass.validUntil).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                          {new Date(pass.validFrom).toLocaleDateString('en-IN', {day:'2-digit',month:'short'})}
+                          {' → '}
+                          {new Date(pass.validUntil).toLocaleDateString('en-IN', {day:'2-digit',month:'short',year:'numeric'})}
                         </p>
                       </div>
                     </div>
@@ -609,7 +664,7 @@ export default function ResidentDashboard() {
                     </div>
                   </div>
                 </div>
-              ))}
+              )})}
             </div>
 
             {/* Expected Visitors */}
@@ -648,70 +703,69 @@ export default function ResidentDashboard() {
         {/* SECURITY TAB */}
         {activeTab === 'security' && (
           <div className="animate-fade-in space-y-4">
-            <h2 className="text-lg font-semibold text-white">Security Settings</h2>
+            <h2 className="text-lg font-semibold text-white">Security — Blocked Visitors</h2>
+            <p className="text-xs text-slate-500">Visitors you have blocked from entering your flat. You can unblock or permanently remove them.</p>
 
-            {/* Blocklist */}
-            <div>
-              <div className="flex items-center justify-between mb-3">
-                <h3 className="text-sm font-semibold text-red-400 flex items-center gap-2">
-                  <Ban className="w-4 h-4" /> Blocked Visitors
-                </h3>
-                <button className="btn-danger text-xs py-1.5 px-3">
-                  <Plus className="w-3 h-3" /> Block Number
-                </button>
+            {loadingBlocked ? (
+              <div className="text-center py-10 text-slate-500 text-sm">Loading...</div>
+            ) : blockedVisitors.length === 0 ? (
+              <div className="glass-card p-8 text-center border border-dashed border-slate-700">
+                <div className="w-12 h-12 bg-slate-800 rounded-full flex items-center justify-center mx-auto mb-3">
+                  <Ban className="w-6 h-6 text-slate-500" />
+                </div>
+                <p className="text-slate-400 text-sm font-medium">No blocked visitors</p>
+                <p className="text-xs text-slate-600 mt-1">Visitors you block from the approval queue will appear here.</p>
               </div>
-              {mockBlocklist.map(bl => (
-                <div key={bl.id} className="glass-card p-4 mb-3 border-red-500/10">
-                  <div className="flex items-start justify-between">
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <p className="text-sm font-medium text-white">{bl.name}</p>
-                        {bl.societyWide && (
-                          <span className="badge badge-warning text-[10px]">
-                            <Share2 className="w-3 h-3" /> Society-wide
-                          </span>
+            ) : (
+              <div className="space-y-3">
+                {blockedVisitors.map(v => (
+                  <div key={v.id} className="glass-card p-4 border border-red-500/15">
+                    <div className="flex items-start gap-3">
+                      <div className="w-11 h-11 rounded-xl bg-red-500/10 border border-red-500/20 flex items-center justify-center flex-shrink-0 overflow-hidden">
+                        {v.photo
+                          ? <img src={v.photo} alt={v.name} className="w-full h-full object-cover" />
+                          : <span className="text-sm font-bold text-red-400">{v.name?.charAt(0)?.toUpperCase()}</span>
+                        }
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <p className="text-sm font-semibold text-white">{v.name}</p>
+                          <span className="badge badge-danger text-[10px]">Blocked</span>
+                        </div>
+                        <p className="text-xs text-slate-500 mt-0.5">{v.phone}</p>
+                        <p className="text-xs text-slate-500">{v.purpose} &bull; Flat {v.flatGate}</p>
+                        {v.blockedAt && (
+                          <p className="text-[10px] text-slate-600 mt-0.5">
+                            Blocked {getTimeAgo(v.blockedAt)}
+                          </p>
                         )}
                       </div>
-                      <p className="text-xs text-slate-500">{bl.phone}</p>
-                      <p className="text-xs text-slate-500 mt-1">Reason: {bl.reason}</p>
-                      <p className="text-[10px] text-slate-600 mt-0.5">Blocked on {bl.addedOn}</p>
+                      <div className="flex flex-col gap-1.5">
+                        <button
+                          onClick={async () => {
+                            await unblockVisitor(v.id)
+                            setBlockedVisitors(prev => prev.filter(b => b.id !== v.id))
+                          }}
+                          className="px-2.5 py-1 rounded-lg bg-green-500/10 border border-green-500/25 text-green-400 text-[10px] font-semibold hover:bg-green-500/20 transition-colors whitespace-nowrap"
+                        >
+                          Unblock
+                        </button>
+                        <button
+                          onClick={async () => {
+                            if (!confirm(`Remove ${v.name} from blocked list permanently?`)) return
+                            await removeVisitorEntry(v.id)
+                            setBlockedVisitors(prev => prev.filter(b => b.id !== v.id))
+                          }}
+                          className="px-2.5 py-1 rounded-lg bg-slate-800 border border-slate-700 text-slate-400 text-[10px] font-semibold hover:border-red-500/40 hover:text-red-400 transition-colors whitespace-nowrap"
+                        >
+                          Remove
+                        </button>
+                      </div>
                     </div>
-                    <button className="p-1.5 rounded-lg text-slate-500 hover:text-red-400 transition-colors">
-                      <Trash2 className="w-4 h-4" />
-                    </button>
                   </div>
-                </div>
-              ))}
-            </div>
-
-            {/* Watchlist */}
-            <div>
-              <div className="flex items-center justify-between mb-3">
-                <h3 className="text-sm font-semibold text-amber-400 flex items-center gap-2">
-                  <Eye className="w-4 h-4" /> Watchlist
-                </h3>
-                <button className="btn-outline text-xs py-1.5 px-3 border-amber-500/30 text-amber-400 hover:border-amber-500">
-                  <Plus className="w-3 h-3" /> Add to Watchlist
-                </button>
+                ))}
               </div>
-              {mockWatchlist.map(wl => (
-                <div key={wl.id} className="glass-card p-4 mb-3 border-amber-500/10">
-                  <div className="flex items-start justify-between">
-                    <div>
-                      <p className="text-sm font-medium text-white">{wl.name}</p>
-                      <p className="text-xs text-slate-500">{wl.phone}</p>
-                      <p className="text-xs text-slate-500 mt-1">Reason: {wl.reason}</p>
-                    </div>
-                    <div className="flex gap-1">
-                      <button className="btn-danger text-[10px] py-1 px-2">Block</button>
-                      <button className="p-1.5 rounded-lg text-slate-500 hover:text-red-400 transition-colors">
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
+            )}
           </div>
         )}
 

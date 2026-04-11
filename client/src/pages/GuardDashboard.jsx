@@ -4,7 +4,8 @@ import {
   Shield, LogOut, Plus, QrCode, Camera, AlertTriangle,
   CheckCircle, XCircle, Clock, Users, UserPlus, Search,
   Phone, Home, Eye, MapPin, Bell, X, Send, User,
-  ScanLine, LogIn, DoorOpen, RefreshCw, MessageCircle
+  ScanLine, LogIn, DoorOpen, RefreshCw, MessageCircle,
+  Mic, MicOff, Loader2
 } from 'lucide-react'
 import { mockAlerts, getTimeAgo, getStatusColor, getStatusLabel } from '../data/mockData'
 import { QRCodeSVG } from 'qrcode.react'
@@ -80,8 +81,12 @@ export default function GuardDashboard() {
               )}
             </button>
             <div className="flex items-center gap-2 pl-2 border-l border-slate-700">
-              <div className="w-8 h-8 rounded-lg bg-blue-500/20 text-blue-400 flex items-center justify-center text-xs font-bold">
+              <div className="w-8 h-8 rounded-lg bg-blue-500/20 text-blue-400 flex items-center justify-center text-xs font-bold shrink-0">
                 {user?.name?.split(' ').map(n => n.charAt(0)).join('').substring(0, 2).toUpperCase() || 'U'}
+              </div>
+              <div className="hidden sm:block">
+                <p className="text-xs font-semibold text-white leading-tight">{user?.name?.split(' ')[0] || 'Guard'}</p>
+                <p className="text-[10px] text-slate-500">Guard</p>
               </div>
               <button onClick={logout} className="p-2 rounded-xl text-slate-500 hover:text-red-400 transition-colors" title="Logout">
                 <LogOut className="w-4 h-4" />
@@ -400,15 +405,62 @@ function NewEntryTab({ user, todayEntries, onDone }) {
   const fileInputRef = useRef(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-  const [submitted, setSubmitted] = useState(null)  // holds the created visitor entry
+  const [submitted, setSubmitted] = useState(null)
 
   const [formData, setFormData] = useState({
     name: '', phone: '+91', purpose: '', flatGate: '', photo: null
   })
   const [photoFile, setPhotoFile] = useState(null)
-  const [returningProfile, setReturningProfile] = useState(null)  // existing visitor profile
+  const [returningProfile, setReturningProfile] = useState(null)
   const [faceCheckDone, setFaceCheckDone] = useState(false)
-  const [faceMatch, setFaceMatch] = useState('new')  // 'new' | 'matched' | 'mismatch'
+  const [faceMatch, setFaceMatch] = useState('new')
+
+  // ── Voice input state ──────────────────────────────────
+  const [activeVoiceField, setActiveVoiceField] = useState(null) // which field is listening
+  const recognitionRef = useRef(null)
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
+
+  const startVoiceForField = (fieldName) => {
+    if (!SpeechRecognition) { alert('Voice input requires Chrome or Edge.'); return }
+    // Stop any existing session
+    if (recognitionRef.current) { recognitionRef.current.stop() }
+    if (activeVoiceField === fieldName) { setActiveVoiceField(null); return } // toggle off
+
+    const rec = new SpeechRecognition()
+    rec.lang = 'en-IN'
+    rec.continuous = false
+    rec.interimResults = false
+    rec.maxAlternatives = 3
+
+    rec.onstart = () => setActiveVoiceField(fieldName)
+
+    rec.onresult = (e) => {
+      const transcript = e.results[0][0].transcript.trim()
+      setFormData(prev => ({ ...prev, [fieldName]: transcript }))
+      // For phone: normalize digits
+      if (fieldName === 'phone') {
+        const digits = transcript.replace(/\D/g, '')
+        const normalized = digits.startsWith('91') && digits.length === 12
+          ? '+' + digits
+          : digits.length === 10 ? '+91' + digits : transcript
+        setFormData(prev => ({ ...prev, phone: normalized }))
+      }
+      rec.stop()
+    }
+
+    rec.onerror = (e) => {
+      if (e.error !== 'no-speech') console.error('Voice error:', e.error)
+      setActiveVoiceField(null)
+    }
+    rec.onend = () => setActiveVoiceField(null)
+
+    recognitionRef.current = rec
+    rec.start()
+  }
+
+  useEffect(() => {
+    return () => { recognitionRef.current?.stop() }
+  }, [])
 
   const handlePhotoChange = async (e) => {
     const file = e.target.files[0]
@@ -514,6 +566,22 @@ function NewEntryTab({ user, todayEntries, onDone }) {
     }} />
   }
 
+  // Helper: mic button for each field
+  const MicBtn = ({ field }) => (
+    <button
+      type="button"
+      onClick={() => startVoiceForField(field)}
+      className={`absolute right-2 top-1/2 -translate-y-1/2 p-1.5 rounded-lg transition-colors ${
+        activeVoiceField === field
+          ? 'text-red-400 bg-red-500/10 animate-pulse'
+          : 'text-slate-500 hover:text-indigo-400 hover:bg-slate-700'
+      }`}
+      title={activeVoiceField === field ? 'Stop recording' : `Speak ${field}`}
+    >
+      {activeVoiceField === field ? <MicOff className="w-3.5 h-3.5" /> : <Mic className="w-3.5 h-3.5" />}
+    </button>
+  )
+
   return (
     <div className="animate-fade-in">
       <div className="glass-card p-5">
@@ -521,6 +589,12 @@ function NewEntryTab({ user, todayEntries, onDone }) {
           <h3 className="text-lg font-semibold text-white flex items-center gap-2">
             <UserPlus className="w-5 h-5 text-indigo-400" /> Log New Visitor
           </h3>
+          {SpeechRecognition && (
+            <div className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-indigo-500/10 border border-indigo-500/20">
+              <Mic className="w-3 h-3 text-indigo-400" />
+              <span className="text-[10px] text-indigo-400 font-medium">Voice enabled</span>
+            </div>
+          )}
         </div>
 
         {error && (
@@ -564,11 +638,12 @@ function NewEntryTab({ user, todayEntries, onDone }) {
                 <input
                   type="text"
                   placeholder="Full name"
-                  className="input-field pl-10"
+                  className="input-field pl-10 pr-9"
                   value={formData.name}
                   onChange={e => setFormData(prev => ({ ...prev, name: e.target.value }))}
                   required
                 />
+                <MicBtn field="name" />
               </div>
             </div>
             <div>
@@ -578,12 +653,13 @@ function NewEntryTab({ user, todayEntries, onDone }) {
                 <input
                   type="tel"
                   placeholder="+91 9876543210"
-                  className="input-field pl-10"
+                  className="input-field pl-10 pr-9"
                   value={formData.phone}
                   onChange={e => setFormData(prev => ({ ...prev, phone: e.target.value }))}
                   onBlur={handlePhoneBlur}
                   required
                 />
+                <MicBtn field="phone" />
               </div>
               {returningProfile && (
                 <p className="text-xs text-indigo-400 mt-1 flex items-center gap-1">
@@ -597,14 +673,17 @@ function NewEntryTab({ user, todayEntries, onDone }) {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
               <label className="block text-sm text-slate-400 mb-1.5">Purpose of Visit *</label>
-              <input
-                type="text"
-                placeholder="e.g. Guest, Delivery, Repair..."
-                className="input-field"
-                value={formData.purpose}
-                onChange={e => setFormData(prev => ({ ...prev, purpose: e.target.value }))}
-                required
-              />
+              <div className="relative">
+                <input
+                  type="text"
+                  placeholder="e.g. Guest, Delivery, Repair..."
+                  className="input-field pr-9"
+                  value={formData.purpose}
+                  onChange={e => setFormData(prev => ({ ...prev, purpose: e.target.value }))}
+                  required
+                />
+                <MicBtn field="purpose" />
+              </div>
             </div>
             <div>
               <label className="block text-sm text-slate-400 mb-1.5">Flat Number *</label>
@@ -613,14 +692,22 @@ function NewEntryTab({ user, todayEntries, onDone }) {
                 <input
                   type="text"
                   placeholder="e.g. A-302"
-                  className="input-field pl-10"
+                  className="input-field pl-10 pr-9"
                   value={formData.flatGate}
                   onChange={e => setFormData(prev => ({ ...prev, flatGate: e.target.value }))}
                   required
                 />
+                <MicBtn field="flatGate" />
               </div>
             </div>
           </div>
+
+          {activeVoiceField && (
+            <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-red-500/10 border border-red-500/20 text-xs text-red-400">
+              <span className="w-2 h-2 rounded-full bg-red-400 animate-pulse" />
+              Listening for <span className="font-semibold capitalize">{activeVoiceField === 'flatGate' ? 'Flat Number' : activeVoiceField}</span>… speak clearly
+            </div>
+          )}
 
           {/* Face Comparison Panel — only for returning visitors */}
           {returningProfile && formData.photo && (

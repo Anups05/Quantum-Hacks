@@ -164,7 +164,12 @@ export const getPreApprovedPassesForFlat = async (societyName, flatGate) => {
   const now = new Date()
   return snap.docs
     .map(d => ({ id: d.id, ...d.data() }))
-    .filter(pass => pass.status !== 'revoked' && new Date(pass.validUntil) >= now)
+    .filter(pass => {
+      // Show all non-revoked passes regardless of expiry
+      if (pass.status === 'revoked') return false
+      return true
+    })
+    .sort((a, b) => new Date(a.validFrom) - new Date(b.validFrom)) // earliest first
 }
 
 /**
@@ -211,10 +216,46 @@ export const deletePreApprovedPass = async (passId) => {
 }
 
 /**
- * Block a visitor — also updates the visitor's profile with a blocked flag
+ * Block a visitor — records who blocked them and when
  */
 export const blockVisitor = async (visitorId, visitorData) => {
-  await updateDoc(doc(db, 'visitors', visitorId), { status: 'blocked' })
+  await updateDoc(doc(db, 'visitors', visitorId), {
+    status: 'blocked',
+    blockedAt: new Date().toISOString()
+  })
+}
+
+/**
+ * Get all visitors blocked by a specific flat (resident)
+ */
+export const getBlockedVisitorsByFlat = async (societyName, flatGate) => {
+  const q = query(
+    collection(db, 'visitors'),
+    where('societyName', '==', societyName),
+    where('flatGate', '==', flatGate),
+    where('status', '==', 'blocked')
+  )
+  const snap = await getDocs(q)
+  return snap.docs
+    .map(d => ({ id: d.id, ...d.data() }))
+    .sort((a, b) => new Date(b.blockedAt || b.entryTimestamp) - new Date(a.blockedAt || a.entryTimestamp))
+}
+
+/**
+ * Unblock a visitor — sets status back to 'rejected'
+ */
+export const unblockVisitor = async (visitorId) => {
+  await updateDoc(doc(db, 'visitors', visitorId), {
+    status: 'rejected',
+    unblockedAt: new Date().toISOString()
+  })
+}
+
+/**
+ * Permanently remove a visitor entry (for resident's blocked list)
+ */
+export const removeVisitorEntry = async (visitorId) => {
+  await deleteDoc(doc(db, 'visitors', visitorId))
 }
 
 /**
