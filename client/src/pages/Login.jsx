@@ -63,26 +63,31 @@ export default function Login() {
         const userCredential = await createUserWithEmailAndPassword(auth, formData.email, formData.password)
         const user = userCredential.user
 
-        const isUnique = await checkPhoneUnique(formData.phoneNumber)
-        if (!isUnique) {
-          // Note: In production you might want to delete the newly created auth user here
-          throw new Error('This phone number is already registered.')
-        }
-        
-        const status = selectedRole === 'admin' ? 'approved' : 'pending'
+        try {
+          const isUnique = await checkPhoneUnique(formData.phoneNumber)
+          if (!isUnique) {
+            throw new Error('This phone number is already registered.')
+          }
+          
+          const status = selectedRole === 'admin' ? 'approved' : 'pending'
 
-        // Save extra data to Firestore
-        await setDoc(doc(db, 'users', user.uid), {
-          uid: user.uid,
-          name: formData.name,
-          email: formData.email,
-          role: selectedRole,
-          phoneNumber: formData.phoneNumber,
-          societyName: formData.societyName,
-          flatGate: formData.flatGate,
-          status: status,
-          createdAt: new Date().toISOString()
-        })
+          // Save extra data to Firestore
+          await setDoc(doc(db, 'users', user.uid), {
+            uid: user.uid,
+            name: formData.name,
+            email: formData.email,
+            role: selectedRole,
+            phoneNumber: formData.phoneNumber,
+            societyName: formData.societyName,
+            flatGate: formData.flatGate,
+            status: status,
+            createdAt: new Date().toISOString()
+          })
+        } catch (dbError) {
+          // If Firestore write or DB logic fails, immediately clean up Auth to prevent soft-locks
+          await user.delete()
+          throw dbError
+        }
       } else {
         // Login flow
         await signInWithEmailAndPassword(auth, formData.email, formData.password)

@@ -20,8 +20,10 @@ import {
   getPendingVisitorsForFlat, getVisitorHistoryForFlat,
   approveVisitor, rejectVisitor, blockVisitor, getTodayEntries,
   createPreApprovedPass, compressImageToBase64,
-  getPreApprovedPassesForFlat, deletePreApprovedPass
+  getPreApprovedPassesForFlat, deletePreApprovedPass,
+  getExpectedVisitorsForFlat, createExpectedVisitor
 } from '../utils/visitorHelpers'
+import VisitorChatModal from '../components/VisitorChatModal'
 
 export default function ResidentDashboard() {
   const { user, setUser, logout } = useContext(AuthContext)
@@ -108,29 +110,35 @@ export default function ResidentDashboard() {
     return matchSearch && matchFilter
   })
 
+  const [showExpectedModal, setShowExpectedModal] = useState(false)
+  const [expectedVisitors, setExpectedVisitors] = useState([])
+  const [chatVisitor, setChatVisitor] = useState(null)
+
   // Load real visitor data
   useEffect(() => {
     if (!user?.societyName || !user?.flatGate) return
     const load = async () => {
       try {
         const safeFlat = user.flatGate.trim().toUpperCase()
-        const [pending, history, today, passes] = await Promise.all([
+        const [pending, history, today, passes, expected] = await Promise.all([
           getPendingVisitorsForFlat(user.societyName, safeFlat),
           getVisitorHistoryForFlat(user.societyName, safeFlat),
           getTodayEntries(user.societyName),
-          getPreApprovedPassesForFlat(user.societyName, safeFlat)
+          getPreApprovedPassesForFlat(user.societyName, safeFlat),
+          getExpectedVisitorsForFlat(user.societyName, safeFlat)
         ])
         setPendingVisitors(pending)
         setVisitHistory(history)
         setTodayEntries(today.filter(v => v.flatGate === safeFlat || v.flatGate === user.flatGate))
         setActivePasses(passes)
+        setExpectedVisitors(expected)
       } catch(e) { console.error(e) } finally { setLoadingVisitors(false) }
     }
     load()
-  }, [user, showPreApprove])
+  }, [user, showPreApprove, showExpectedModal])
 
   const handleApprove = async (visitorId) => {
-    await approveVisitor(visitorId)
+    await approveVisitor(visitorId, user.name)
     setPendingVisitors(prev => prev.filter(v => v.id !== visitorId))
     const updated = await getVisitorHistoryForFlat(user.societyName, user.flatGate.trim().toUpperCase())
     setVisitHistory(updated)
@@ -403,11 +411,15 @@ export default function ResidentDashboard() {
                 <h3 className="text-sm font-semibold text-white flex items-center gap-2">
                   <Calendar className="w-4 h-4 text-blue-400" /> Expected Visitors Today
                 </h3>
-                <button className="text-xs text-indigo-400 flex items-center gap-1">
+                <button onClick={() => setShowExpectedModal(true)} className="text-xs text-indigo-400 flex items-center gap-1 hover:text-indigo-300">
                   <Plus className="w-3 h-3" /> Add
                 </button>
               </div>
-              {mockExpectedVisitors.map(ev => (
+              {expectedVisitors.length === 0 ? (
+                <div className="text-center py-4 bg-slate-800/30 rounded-xl border border-dashed border-slate-700 mb-2">
+                  <p className="text-slate-400 text-xs">No expected visitors for today.</p>
+                </div>
+              ) : expectedVisitors.map(ev => (
                 <div key={ev.id} className="flex items-center justify-between p-3 rounded-xl bg-slate-800/30 border border-slate-700/50 mb-2">
                   <div className="flex items-center gap-3">
                     <div className="w-10 h-10 rounded-lg bg-blue-500/15 flex items-center justify-center">
@@ -415,10 +427,10 @@ export default function ResidentDashboard() {
                     </div>
                     <div>
                       <p className="text-sm text-white font-medium">{ev.name}</p>
-                      <p className="text-xs text-slate-500">{ev.expectedDate} • {ev.timeWindow}</p>
+                      <p className="text-xs text-slate-500">{new Date(ev.expectedDate).toLocaleDateString()} • {ev.timeWindow}</p>
                     </div>
                   </div>
-                  <span className="badge badge-info text-[10px]">Expected</span>
+                  <span className="badge badge-info text-[10px]">Expected Today</span>
                 </div>
               ))}
             </div>
@@ -438,6 +450,7 @@ export default function ResidentDashboard() {
                   onApprove={() => handleApprove(visitor.id)}
                   onReject={() => handleReject(visitor.id)}
                   onBlock={() => handleBlock(visitor.id, visitor)}
+                  onChat={() => setChatVisitor({ id: visitor.id, name: visitor.name })}
                 />
               ))
             ) : (
@@ -464,10 +477,16 @@ export default function ResidentDashboard() {
                         <p className="text-sm text-white">{visitor.name}</p>
                         <p className="text-xs text-slate-500">{visitor.purpose} • {visitor.phone} • {getTimeAgo(visitor.entryTimestamp)}</p>
                       </div>
-                      <span className={`badge ${
-                        visitor.status === 'approved' ? 'badge-info' :
-                        visitor.status === 'rejected' ? 'badge-danger' : 'badge-warning'
-                      }`}>{visitor.status}</span>
+                      <div className="flex flex-col items-end gap-1">
+                        <span className={`badge ${
+                          visitor.status === 'approved' ? 'badge-info' :
+                          visitor.status === 'rejected' ? 'badge-danger' : 'badge-warning'
+                        }`}>{visitor.status}</span>
+                        <button onClick={() => setChatVisitor({ id: visitor.id, name: visitor.name })} className="p-1.5 rounded-lg text-slate-400 hover:text-indigo-400 hover:bg-slate-800 transition-colors relative" title="Message Security">
+                          <MessageCircle className="w-4 h-4" />
+                          {visitor.messages?.length > 0 && <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-indigo-500" />}
+                        </button>
+                      </div>
                     </div>
                     {visitor.status === 'approved' && visitor.qrToken && (
                       <div className="mt-3 bg-slate-900 border border-indigo-500/30 rounded-lg p-2 text-center flex items-center justify-center gap-2">
@@ -596,24 +615,29 @@ export default function ResidentDashboard() {
             {/* Expected Visitors */}
             <div>
               <h3 className="text-sm font-semibold text-slate-400 mb-3 flex items-center gap-2">
-                <UserPlus className="w-4 h-4" /> Expected Visitors
+                <UserPlus className="w-4 h-4" /> Expected Visitors Today
               </h3>
-              {mockExpectedVisitors.map(ev => (
+              {expectedVisitors.length === 0 ? (
+                <div className="text-center py-8 bg-slate-800/30 rounded-xl border border-dashed border-slate-700 mb-2">
+                  <p className="text-slate-400 text-sm">No expected visitors found.</p>
+                </div>
+              ) : expectedVisitors.map(ev => (
                 <div key={ev.id} className="glass-card p-4 mb-3">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 rounded-xl bg-green-500/15 flex items-center justify-center">
-                        <User className="w-5 h-5 text-green-400" />
+                      <div className="w-10 h-10 rounded-xl bg-blue-500/15 flex items-center justify-center">
+                        <User className="w-5 h-5 text-blue-400" />
                       </div>
                       <div>
                         <p className="text-sm font-medium text-white">{ev.name}</p>
-                        <p className="text-xs text-slate-500">{ev.phone}</p>
-                        <p className="text-xs text-slate-500">{ev.expectedDate} • {ev.timeWindow}</p>
+                        <p className="text-xs text-slate-500">{ev.purpose}</p>
+                        <p className="text-xs text-slate-500 mt-0.5">{ev.phone}</p>
                       </div>
                     </div>
-                    <button className="p-1.5 rounded-lg text-slate-500 hover:text-red-400 transition-colors">
-                      <Trash2 className="w-4 h-4" />
-                    </button>
+                    <div className="text-right">
+                      <span className="badge badge-info text-[10px] mb-1">Expected Today</span>
+                      <p className="text-xs text-slate-400">{ev.timeWindow}</p>
+                    </div>
                   </div>
                 </div>
               ))}
@@ -765,6 +789,19 @@ export default function ResidentDashboard() {
         />
       )}
 
+      {showExpectedModal && (
+        <ExpectedVisitorModal onClose={() => setShowExpectedModal(false)} user={user} />
+      )}
+
+      {chatVisitor && (
+        <VisitorChatModal
+          visitorId={chatVisitor.id}
+          visitorName={chatVisitor.name}
+          user={user}
+          onClose={() => setChatVisitor(null)}
+        />
+      )}
+
       {/* Delete Confirmation Modal */}
       {deleteConfirmId && (
         <div className="fixed inset-0 z-[200] bg-black/60 flex items-center justify-center p-4">
@@ -912,6 +949,91 @@ function ChatOverlay({ onClose }) {
             <button className="btn-primary px-3"><Send className="w-4 h-4" /></button>
           </div>
         </div>
+      </div>
+    </div>
+  )
+}
+
+/* ─── EXPECTED VISITOR MODAL ─── */
+function ExpectedVisitorModal({ onClose, user }) {
+  const [formData, setFormData] = useState({
+    name: '',
+    phone: '',
+    purpose: '',
+    timeWindow: ''
+  })
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+
+  const handleSubmit = async (e) => {
+    e.preventDefault()
+    setLoading(true)
+    setError('')
+    try {
+      if (!validatePhoneFormat(formData.phone)) {
+        throw new Error('Phone number must be +91 followed by 10 digits.')
+      }
+
+      await createExpectedVisitor({
+        name: formData.name,
+        phone: formData.phone,
+        purpose: formData.purpose,
+        timeWindow: formData.timeWindow,
+        flatGate: user.flatGate || user.flat,
+        societyName: user.societyName,
+        residentUid: user.uid
+      })
+      
+      onClose()
+    } catch(err) {
+      setError(err.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-[100] bg-black/60 flex items-center justify-center p-4">
+      <div className="glass-card w-full max-w-md p-6 animate-fade-in max-h-[90vh] overflow-y-auto">
+        <div className="flex items-center justify-between mb-5">
+          <h3 className="text-lg font-semibold text-white">Add Expected Visitor</h3>
+          <button onClick={onClose} className="p-2 rounded-lg text-slate-400 hover:text-white">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        {error && (
+          <div className="mb-4 bg-red-500/10 border border-red-500/50 text-red-500 text-sm p-3 rounded-lg">
+            {error}
+          </div>
+        )}
+
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div>
+            <label className="block text-sm text-slate-400 mb-1.5">Visitor Name *</label>
+            <input type="text" placeholder="Full name" className="input-field" required value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} />
+          </div>
+          <div>
+            <label className="block text-sm text-slate-400 mb-1.5">Phone Number *</label>
+            <input type="tel" placeholder="+91 9876543210" className="input-field" required value={formData.phone} onChange={e => setFormData({...formData, phone: e.target.value})} />
+          </div>
+          <div>
+            <label className="block text-sm text-slate-400 mb-1.5">Purpose of Visit *</label>
+            <input type="text" placeholder="e.g. Guest, Delivery, Repair..." className="input-field" required value={formData.purpose} onChange={e => setFormData({...formData, purpose: e.target.value})} />
+          </div>
+          <div>
+            <label className="block text-sm text-slate-400 mb-1.5">Expected Time Window *</label>
+            <input type="text" placeholder="e.g. 14:00 - 15:00" className="input-field" required value={formData.timeWindow} onChange={e => setFormData({...formData, timeWindow: e.target.value})} />
+          </div>
+          <div>
+            <label className="block text-sm text-slate-400 mb-1.5">Flat Number (Auto)</label>
+            <input type="text" value={user.flatGate || user.flat} className="input-field opacity-50 cursor-not-allowed" disabled />
+          </div>
+
+          <button disabled={loading} type="submit" className="btn-primary w-full justify-center mt-6">
+            {loading ? 'Saving...' : 'Save Expected Visitor'}
+          </button>
+        </form>
       </div>
     </div>
   )
@@ -1101,7 +1223,7 @@ function PreApproveVisitorModal({ onClose, user }) {
 }
 
 /* ─── RESIDENT APPROVAL CARD ─── */
-function ResidentApprovalCard({ visitor, onApprove, onReject, onBlock }) {
+function ResidentApprovalCard({ visitor, onApprove, onReject, onBlock, onChat }) {
   const [busy, setBusy] = useState(false)
 
   const act = async (fn) => {
@@ -1137,7 +1259,13 @@ function ResidentApprovalCard({ visitor, onApprove, onReject, onBlock }) {
             <p><span className="text-slate-500">Flat:</span> {visitor.flatGate}</p>
             <p><span className="text-slate-500">Time:</span> {new Date(visitor.entryTimestamp).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true })}</p>
           </div>
-          <div className="flex gap-2 mt-3">
+          <div className="flex gap-2 mt-3 flex-wrap">
+            <button onClick={() => onChat()}
+              className="flex-1 py-2 rounded-xl bg-indigo-500/10 border border-indigo-500/30 text-indigo-400 text-xs font-semibold hover:bg-indigo-500/20 transition-colors flex items-center justify-center gap-1 min-w-[70px] relative">
+              <MessageCircle className="w-4 h-4" />
+              Chat
+              {visitor.messages?.length > 0 && <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-indigo-400 shadow-sm shadow-indigo-400" />}
+            </button>
             <button disabled={busy} onClick={() => act(onApprove)}
               className="flex-1 py-2 rounded-xl bg-green-500/15 border border-green-500/30 text-green-400 text-xs font-semibold hover:bg-green-500/25 transition-colors">
               ✓ Approve

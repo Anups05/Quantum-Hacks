@@ -85,7 +85,7 @@ export const saveVisitorProfile = async ({ phone, name, photo, societyName }) =>
  */
 export const logVisitorEntry = async ({
   name, phone, purpose, flatGate, societyName,
-  enteredBy, photo, faceMatch
+  enteredBy, guardName, photo, faceMatch
 }) => {
   const token = crypto.randomUUID()
   const entryData = {
@@ -95,6 +95,7 @@ export const logVisitorEntry = async ({
     flatGate,
     societyName,
     enteredBy,         // guard UID
+    guardName,         // Save the guard's actual name
     photo,             // snapshot of today's visit (compressed, not encrypted — for display)
     faceMatch,         // 'new' | 'matched' | 'mismatch'
     status: 'pending',
@@ -110,10 +111,11 @@ export const logVisitorEntry = async ({
 /**
  * Log a pre-approved visitor entry to `visitors` collection bypassing resident approval by UPDATING the pass ID
  */
-export const markPreApprovedVisitorInside = async (passId, enteredBy) => {
+export const markPreApprovedVisitorInside = async (passId, enteredBy, guardName) => {
   await updateDoc(doc(db, 'visitors', passId), {
     status: 'inside', // Skipped pending and approved stages!
     enteredBy,
+    guardName,
     date: todayIST(),  // stamp today's date so it shows in today's active visitors
     entryTimestamp: new Date().toISOString(),
     faceMatch: 'pre_approved'
@@ -183,11 +185,12 @@ export const getVisitorHistoryForFlat = async (societyName, flatGate) => {
 /**
  * Approve a visitor — sets status to 'approved' and generates a QR token
  */
-export const approveVisitor = async (visitorId) => {
+export const approveVisitor = async (visitorId, residentName) => {
   const token = Math.floor(100000 + Math.random() * 900000).toString()
   await updateDoc(doc(db, 'visitors', visitorId), {
     status: 'approved',
-    qrToken: token
+    qrToken: token,
+    residentName: residentName || null
   })
   return token
 }
@@ -316,4 +319,47 @@ export const getPassById = async (passId) => {
   const snapshot = await getDocs(query(collection(db, 'visitors'), where('__name__', '==', passId)))
   if (snapshot.empty) return null;
   return { id: snapshot.docs[0].id, ...snapshot.docs[0].data() }
+}
+
+/**
+ * Expected Visitor Workflow: Create Expected Visitor for Today
+ */
+export const createExpectedVisitor = async (visitorData) => {
+  const docRef = await addDoc(collection(db, 'visitors'), {
+    ...visitorData,
+    type: 'expected_visitor',
+    status: 'expected',
+    expectedDate: todayIST(),
+    createdAt: new Date().toISOString()
+  });
+  return docRef.id;
+}
+
+/**
+ * Expected Visitor Workflow: Residents viewing their expected visitors
+ */
+export const getExpectedVisitorsForFlat = async (societyName, flatGate) => {
+  const q = query(
+    collection(db, 'visitors'),
+    where('societyName', '==', societyName),
+    where('flatGate', '==', flatGate),
+    where('type', '==', 'expected_visitor'),
+    where('expectedDate', '==', todayIST())
+  )
+  const snap = await getDocs(q)
+  return snap.docs.map(d => ({ id: d.id, ...d.data() }))
+}
+
+/**
+ * Expected Visitor Workflow: Guards viewing expected visitors for the society
+ */
+export const getExpectedVisitorsForSociety = async (societyName) => {
+  const q = query(
+    collection(db, 'visitors'),
+    where('societyName', '==', societyName),
+    where('type', '==', 'expected_visitor'),
+    where('expectedDate', '==', todayIST())
+  )
+  const snap = await getDocs(q)
+  return snap.docs.map(d => ({ id: d.id, ...d.data() }))
 }

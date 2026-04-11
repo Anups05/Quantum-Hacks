@@ -4,7 +4,7 @@ import {
   Shield, LogOut, Plus, QrCode, Camera, AlertTriangle,
   CheckCircle, XCircle, Clock, Users, UserPlus, Search,
   Phone, Home, Eye, MapPin, Bell, X, Send, User,
-  ScanLine, LogIn, DoorOpen, RefreshCw
+  ScanLine, LogIn, DoorOpen, RefreshCw, MessageCircle
 } from 'lucide-react'
 import { mockAlerts, getTimeAgo, getStatusColor, getStatusLabel } from '../data/mockData'
 import { QRCodeSVG } from 'qrcode.react'
@@ -13,9 +13,11 @@ import {
   compressImageToBase64, lookupVisitorProfile, saveVisitorProfile,
   logVisitorEntry, markPreApprovedVisitorInside, getTodayEntries, markVisitorInside,
   markVisitorExit, getAllVisitorsForSociety, decryptPhoto,
-  verifyOtpToken, checkIfSocietyMember, getPassById
+  verifyOtpToken, checkIfSocietyMember, getPassById,
+  getExpectedVisitorsForSociety
 } from '../utils/visitorHelpers'
 import { Html5QrcodeScanner } from 'html5-qrcode'
+import VisitorChatModal from '../components/VisitorChatModal'
 
 export default function GuardDashboard() {
   const { user, logout } = useContext(AuthContext)
@@ -25,6 +27,7 @@ export default function GuardDashboard() {
   // Lift todayEntries to parent so polling runs regardless of active tab
   const [todayEntries, setTodayEntries] = useState([])
   const [entriesLoading, setEntriesLoading] = useState(true)
+  const [expectedVisitors, setExpectedVisitors] = useState([])
 
   useEffect(() => {
     if (!user?.societyName) return
@@ -32,6 +35,9 @@ export default function GuardDashboard() {
       getTodayEntries(user.societyName)
         .then(entries => { setTodayEntries(entries); setEntriesLoading(false) })
         .catch(() => setEntriesLoading(false))
+      getExpectedVisitorsForSociety(user.societyName)
+        .then(setExpectedVisitors)
+        .catch(console.error)
     }
     load()
     // Poll every 4s — so approvals from residents show QR within a few seconds
@@ -114,7 +120,7 @@ export default function GuardDashboard() {
       </nav>
 
       <main className="max-w-7xl mx-auto p-4 pb-24 space-y-4">
-        {activeTab === 'home' && <HomeTab user={user} todayEntries={todayEntries} loading={entriesLoading} setTodayEntries={setTodayEntries} onNavigate={setActiveTab} />}
+        {activeTab === 'home' && <HomeTab user={user} todayEntries={todayEntries} expectedVisitors={expectedVisitors} loading={entriesLoading} setTodayEntries={setTodayEntries} onNavigate={setActiveTab} />}
         {activeTab === 'log' && <NewEntryTab user={user} todayEntries={todayEntries} onDone={() => setActiveTab('home')} />}
         {activeTab === 'scan' && <ScanTab user={user} />}
         {activeTab === 'visitors' && <VisitorsTab user={user} todayEntries={todayEntries} loading={entriesLoading} />}
@@ -129,7 +135,7 @@ export default function GuardDashboard() {
 }
 
 /* ─────────────────────────────────────────── HOME TAB ─── */
-function HomeTab({ user, todayEntries, loading, setTodayEntries, onNavigate }) {
+function HomeTab({ user, todayEntries, expectedVisitors, loading, setTodayEntries, onNavigate }) {
   const pending = todayEntries.filter(v => v.status === 'pending')
   const inside = todayEntries.filter(v => v.status === 'inside')
 
@@ -235,9 +241,42 @@ function HomeTab({ user, todayEntries, loading, setTodayEntries, onNavigate }) {
                 <ActiveVisitorCard
                   key={visitor.id}
                   visitor={visitor}
+                  user={user}
                   onStatusChange={handleStatusChange}
                 />
               ))}
+          </div>
+        )}
+      </div>
+
+      {/* Expected Visitors */}
+      <div className="mt-8">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-sm font-semibold text-slate-400 flex items-center gap-2">
+            <UserPlus className="w-4 h-4" /> Expected Today
+          </h3>
+        </div>
+        {!expectedVisitors || expectedVisitors.length === 0 ? (
+          <div className="glass-card p-6 text-center border-dashed border-slate-700/50">
+             <p className="text-slate-400 text-xs">No expected visitors log from residents.</p>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {expectedVisitors.map(ev => (
+              <div key={ev.id} className="glass-card p-3 border-l-4 border-l-blue-500">
+                <div className="flex justify-between items-start">
+                  <div>
+                    <p className="text-sm font-bold text-white mb-0.5">{ev.name}</p>
+                    <p className="text-xs text-slate-400 flex items-center gap-1"><Home className="w-3 h-3 text-slate-500"/> {ev.flatGate}</p>
+                    <p className="text-xs text-slate-400 mt-1">{ev.purpose} • {ev.phone}</p>
+                  </div>
+                  <div className="text-right">
+                    <span className="badge badge-info text-[10px] mb-1 py-0.5">Expected</span>
+                    <p className="text-[10px] text-blue-400 font-medium">{ev.timeWindow}</p>
+                  </div>
+                </div>
+              </div>
+            ))}
           </div>
         )}
       </div>
@@ -246,8 +285,9 @@ function HomeTab({ user, todayEntries, loading, setTodayEntries, onNavigate }) {
 }
 
 /* ─────────────────────────── ACTIVE VISITOR CARD ─── */
-function ActiveVisitorCard({ visitor, onStatusChange }) {
+function ActiveVisitorCard({ visitor, user, onStatusChange }) {
   const [busy, setBusy] = useState(false)
+  const [showChat, setShowChat] = useState(false)
 
   const handleMarkExit = async () => {
     setBusy(true)
@@ -300,26 +340,33 @@ function ActiveVisitorCard({ visitor, onStatusChange }) {
             </div>
           </div>
 
-          <div className="flex items-center gap-2 mt-3 flex-wrap">
-            {visitor.status === 'pending' && (
-              <span className="text-xs text-amber-400 flex items-center gap-1">
-                <Clock className="w-3 h-3" /> Waiting for resident approval...
-              </span>
-            )}
-            {visitor.status === 'inside' && (
-              <button
-                onClick={handleMarkExit}
-                disabled={busy}
-                className="btn-outline text-xs py-1.5 px-3"
-              >
-                <DoorOpen className="w-3 h-3" /> Mark Exit
-              </button>
-            )}
+          <div className="flex items-center justify-between mt-4 flex-wrap gap-2 pt-3 border-t border-slate-700/50">
+            <div className="flex items-center gap-2">
+              {visitor.status === 'pending' && (
+                <span className="text-xs text-amber-400 flex items-center gap-1">
+                  <Clock className="w-3 h-3" /> Waiting for resident approval...
+                </span>
+              )}
+              {visitor.status === 'inside' && (
+                <button
+                  onClick={handleMarkExit}
+                  disabled={busy}
+                  className="btn-outline text-xs py-1.5 px-3"
+                >
+                  <DoorOpen className="w-3 h-3" /> Mark Exit
+                </button>
+              )}
+            </div>
+            <button onClick={() => setShowChat(true)} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 hover:bg-indigo-500/20 transition-colors text-xs font-medium relative" title="Message Resident">
+              <MessageCircle className="w-3.5 h-3.5" />
+              Chat
+              {visitor.messages?.length > 0 && <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-indigo-500 border-2 border-[var(--color-dark)]" />}
+            </button>
           </div>
 
           {/* QR Pass — auto-shown when approved, contains OTP for visitor to scan */}
           {visitor.status === 'approved' && visitor.qrToken && (
-            <div className="mt-3 p-3 rounded-xl bg-indigo-500/10 border border-indigo-500/30">
+            <div className="mt-4 p-3 rounded-xl bg-indigo-500/10 border border-indigo-500/30">
               <p className="text-xs text-indigo-400 mb-2 flex items-center gap-1">
                 <QrCode className="w-3 h-3" /> Resident approved. Show QR to visitor to scan:
               </p>
@@ -335,6 +382,15 @@ function ActiveVisitorCard({ visitor, onStatusChange }) {
           )}
         </div>
       </div>
+      {showChat && (
+        <VisitorChatModal 
+          visitorId={visitor.id} 
+          visitorName={visitor.name} 
+          visitorFlat={visitor.flatGate}
+          user={user} 
+          onClose={() => setShowChat(false)} 
+        />
+      )}
     </div>
   )
 }
@@ -434,6 +490,7 @@ function NewEntryTab({ user, todayEntries, onDone }) {
         flatGate: formData.flatGate.trim().toUpperCase(),
         societyName: user.societyName,
         enteredBy: user.uid,
+        guardName: user.name,
         photo: formData.photo,
         faceMatch: returningProfile ? faceMatch : 'new'
       })
@@ -820,7 +877,7 @@ function ScanTab({ user }) {
       }
 
       setScanResult({ status: 'info', message: 'Logging visitor...' })
-      await markPreApprovedVisitorInside(decodedText, user.uid)
+      await markPreApprovedVisitorInside(decodedText, user.uid, user.name)
 
       setScanResult({ status: 'success', message: `${pass.name} Approved` })
     } catch (err) {
