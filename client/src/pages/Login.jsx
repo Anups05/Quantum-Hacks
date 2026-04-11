@@ -168,8 +168,17 @@ export default function Login() {
         if (!validatePhoneFormat(formData.phoneNumber)) {
           throw new Error('Phone number must be +91 followed by 10 digits.')
         }
+
+        // Check if phone unique FIRST
+        const isUnique = await checkPhoneUnique(formData.phoneNumber)
+        if (!isUnique) {
+          throw new Error('This phone number is already registered.')
+        }
+
+        // Lock App.jsx routing engine
+        localStorage.setItem('isLocalRegister', 'true')
         
-        // Register flow - create auth first to get Firestore read permissions
+        // Register flow - create auth
         const userCredential = await createUserWithEmailAndPassword(auth, formData.email, formData.password)
         const user = userCredential.user
 
@@ -177,11 +186,6 @@ export default function Login() {
         await updateProfile(user, { displayName: formData.name })
 
         try {
-          const isUnique = await checkPhoneUnique(formData.phoneNumber)
-          if (!isUnique) {
-            throw new Error('This phone number is already registered.')
-          }
-          
           const status = selectedRole === 'admin' ? 'approved' : 'pending'
 
           // Save extra data to Firestore
@@ -198,9 +202,11 @@ export default function Login() {
             createdAt: new Date().toISOString()
           })
         } catch (dbError) {
-          // If Firestore write or DB logic fails, immediately clean up Auth to prevent soft-locks
-          await user.delete()
-          throw dbError
+          localStorage.removeItem('isLocalRegister')
+          // Let the user remain authenticated so they can manually retry or route to complete-profile 
+          // if it was a transient failure. Log it fully so we know if there's a Firebase rule block!
+          console.error("Firestore Registration DB Error:", dbError)
+          throw new Error("Database Configuration Error. You can complete your profile securely via the generic login flow. System Error: " + dbError.message)
         }
       } else {
         // Login flow

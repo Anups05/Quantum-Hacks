@@ -7,7 +7,7 @@ import ResidentDashboard from './pages/ResidentDashboard'
 import AdminDashboard from './pages/AdminDashboard'
 import { auth, db } from './firebase'
 import { onAuthStateChanged, signOut } from 'firebase/auth'
-import { doc, getDoc } from 'firebase/firestore'
+import { doc, onSnapshot } from 'firebase/firestore'
 
 export const AuthContext = createContext(null)
 
@@ -16,31 +16,53 @@ function App() {
   const [loadingAuth, setLoadingAuth] = useState(true)
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+    let unsubscribeDoc = null;
+    let fallbackTimeout = null;
+    
+    const unsubscribeAuth = onAuthStateChanged(auth, (firebaseUser) => {
       if (firebaseUser) {
-        // Fetch custom user data from Firestore
-        try {
-          const docRef = doc(db, 'users', firebaseUser.uid)
-          const docSnap = await getDoc(docRef)
-          
+        // Fetch custom user data from Firestore and listen to changes
+        const docRef = doc(db, 'users', firebaseUser.uid)
+        unsubscribeDoc = onSnapshot(docRef, (docSnap) => {
           if (docSnap.exists()) {
-            const userData = docSnap.data()
-            setUser({ ...firebaseUser, ...userData })
+            localStorage.removeItem('isLocalRegister')
+            clearTimeout(fallbackTimeout)
+            setUser({ ...firebaseUser, ...docSnap.data() })
+            setLoadingAuth(false)
           } else {
-            // User exists in Auth but not in Firestore Database -> redirect to CompleteProfile
-            setUser(firebaseUser)
+            if (localStorage.getItem('isLocalRegister') === 'true') {
+              // Registration via Login.jsx is currently processing the setDoc.
+              // We intentionally DO NOT update `user` state yet so Login.jsx doesn't unmount!
+              // Safety fallback:
+              fallbackTimeout = setTimeout(() => {
+                localStorage.removeItem('isLocalRegister')
+                setUser(firebaseUser)
+                setLoadingAuth(false)
+              }, 4000)
+            } else {
+              // User exists in Auth but not in Firestore Database -> redirect to CompleteProfile
+              setUser(firebaseUser)
+              setLoadingAuth(false)
+            }
           }
-        } catch (error) {
+        }, (error) => {
           console.error("Error fetching user data:", error)
           setUser(firebaseUser) // Default to auth user if firestore fails
-        }
+          setLoadingAuth(false)
+        })
       } else {
+        if (unsubscribeDoc) unsubscribeDoc();
+        clearTimeout(fallbackTimeout)
         setUser(null)
+        setLoadingAuth(false)
       }
-      setLoadingAuth(false)
     })
 
-    return () => unsubscribe()
+    return () => {
+      unsubscribeAuth()
+      if (unsubscribeDoc) unsubscribeDoc()
+      if (fallbackTimeout) clearTimeout(fallbackTimeout)
+    }
   }, [])
 
   const logout = () => {
