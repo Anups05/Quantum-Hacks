@@ -168,18 +168,56 @@ export const getPreApprovedPassesForFlat = async (societyName, flatGate) => {
     collection(db, 'visitors'),
     where('societyName', '==', societyName),
     where('flatGate', '==', flatGate),
-    where('type', '==', 'pre_approved_visitor')
+    where('type', 'in', ['pre_approved_visitor', 'event_pass'])
   )
   const snap = await getDocs(q)
   const now = new Date()
   return snap.docs
     .map(d => ({ id: d.id, ...d.data() }))
     .filter(pass => {
-      // Show all non-revoked passes regardless of expiry
       if (pass.status === 'revoked') return false
+      // Exclude expired passes
+      if (pass.validUntil && new Date(pass.validUntil) < now) return false
       return true
     })
     .sort((a, b) => new Date(a.validFrom) - new Date(b.validFrom)) // earliest first
+}
+
+/**
+ * Log a specific visitor under an Event Pass when scanned
+ */
+export const processEventPassScan = async (passData, enteredBy, guardName) => {
+  const { id: passId, approxPeopleCount, usageCount = 0, eventName, societyName, flatGate } = passData
+  
+  if (usageCount >= approxPeopleCount) {
+    throw new Error('Event Pass usage limit reached')
+  }
+
+  // 1. Increment usage on the event pass
+  await updateDoc(doc(db, 'visitors', passId), {
+    usageCount: usageCount + 1
+  })
+
+  // 2. Create the actual specific entry record for the dashboard
+  const entryData = {
+    name: `Guest (${usageCount + 1})`,
+    phone: 'Event Pass',
+    purpose: eventName,
+    flatGate,
+    societyName,
+    enteredBy,
+    guardName,
+    photo: null,
+    faceMatch: 'event_guest',
+    status: 'inside', // instantly inside
+    type: 'event_visitor',
+    eventId: passId, // link back to parent
+    date: todayIST(),
+    entryTimestamp: new Date().toISOString(),
+    exitTimestamp: null,
+  }
+  const result = await addDoc(collection(db, 'visitors'), entryData)
+  return { id: result.id, ...entryData }
 }
 
 /**

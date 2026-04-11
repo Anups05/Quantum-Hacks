@@ -15,7 +15,7 @@ import {
   logVisitorEntry, markPreApprovedVisitorInside, getTodayEntries, markVisitorInside,
   markVisitorExit, getAllVisitorsForSociety, decryptPhoto,
   verifyOtpToken, checkIfSocietyMember, getPassById,
-  getExpectedVisitorsForSociety
+  getExpectedVisitorsForSociety, processEventPassScan
 } from '../utils/visitorHelpers'
 import { Html5QrcodeScanner } from 'html5-qrcode'
 import VisitorChatModal from '../components/VisitorChatModal'
@@ -383,7 +383,10 @@ function ActiveVisitorCard({ visitor, user, onStatusChange }) {
           <div className="flex items-start justify-between gap-2">
             <div>
               <div className="flex items-center gap-2 flex-wrap">
-                <p className="text-sm font-semibold text-white">{visitor.name}</p>
+                <p className="text-sm font-semibold text-white">
+                  {visitor.name}
+                  {visitor.type === 'event_visitor' && <span className="ml-2 bg-purple-500/20 text-purple-400 text-[10px] px-1.5 py-0.5 rounded uppercase font-bold">Event</span>}
+                </p>
                 <span className={`badge ${
                   visitor.status === 'pending' ? 'badge-warning' :
                   visitor.status === 'approved' ? 'badge-info' :
@@ -406,7 +409,7 @@ function ActiveVisitorCard({ visitor, user, onStatusChange }) {
               </div>
               <div className="flex items-center gap-3 mt-1 text-xs text-slate-500">
                 <span className="flex items-center gap-1"><Home className="w-3 h-3" />{visitor.flatGate}</span>
-                <span>{visitor.purpose}</span>
+                <span className="bg-slate-800 text-slate-300 px-2 py-0.5 rounded border border-slate-700">{visitor.purpose}</span>
                 <span>{getTimeAgo(visitor.entryTimestamp)}</span>
                 <span>{visitor.phone}</span>
               </div>
@@ -534,11 +537,9 @@ function NewEntryTab({ user, todayEntries, onDone }) {
   }
 
   useEffect(() => {
-    if (!formData.photo && !submitted) {
-      startCamera()
-    }
+    startCamera()
     return () => stopCamera()
-  }, [submitted, formData.photo])
+  }, [])
 
   const [returningProfile, setReturningProfile] = useState(null)
   const [faceCheckDone, setFaceCheckDone] = useState(false)
@@ -1102,14 +1103,19 @@ function ScanTab({ user }) {
       if (now > validUntil) {
         throw new Error(`qr is expired please make new (Ended ${validUntil.toLocaleString()})`)
       }
-      if (pass.status !== 'pre_approved_active') {
-        throw new Error(`Pass is inactive or has already been used.`)
+
+      if (pass.type === 'event_pass') {
+        setScanResult({ status: 'info', message: 'Logging event visitor...' })
+        await processEventPassScan(pass, user.uid, user.name)
+        setScanResult({ status: 'success', message: `Event Guest Approved for ${pass.eventName}` })
+      } else {
+        if (pass.status !== 'pre_approved_active') {
+          throw new Error(`Pass is inactive or has already been used.`)
+        }
+        setScanResult({ status: 'info', message: 'Logging visitor...' })
+        await markPreApprovedVisitorInside(decodedText, user.uid, user.name)
+        setScanResult({ status: 'success', message: `${pass.name} Approved` })
       }
-
-      setScanResult({ status: 'info', message: 'Logging visitor...' })
-      await markPreApprovedVisitorInside(decodedText, user.uid, user.name)
-
-      setScanResult({ status: 'success', message: `${pass.name} Approved` })
     } catch (err) {
       setScanResult({ status: 'error', message: err.message })
     } finally {

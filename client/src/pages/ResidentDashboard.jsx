@@ -723,14 +723,23 @@ export default function ResidentDashboard() {
                       </div>
                       <div>
                         <div className="flex items-center gap-2 flex-wrap">
-                          <p className="text-sm font-medium text-white">{pass.name}</p>
+                          <p className="text-sm font-medium text-white">
+                            {pass.type === 'event_pass' ? pass.eventName : pass.name}
+                            {pass.type === 'event_pass' && <span className="ml-2 bg-purple-500/20 text-purple-400 text-[10px] px-1.5 py-0.5 rounded uppercase font-bold">Event Pass</span>}
+                          </p>
                           <span className={`badge text-[10px] ${
                             isInside ? 'badge-success' : isExpired ? 'bg-slate-700 text-slate-400' : 'badge-info'
                           }`}>
                             {isInside ? 'Inside Now' : isExpired ? 'Expired' : 'Active'}
                           </span>
                         </div>
-                        <p className="text-xs text-slate-500">{pass.phone} &bull; {pass.purpose}</p>
+                        {pass.type === 'event_pass' ? (
+                          <p className="text-xs text-slate-500">
+                            Usages: <span className="text-white font-medium">{pass.usageCount || 0}</span> / {pass.approxPeopleCount} attendees
+                          </p>
+                        ) : (
+                          <p className="text-xs text-slate-500">{pass.phone} &bull; {pass.purpose}</p>
+                        )}
                         <p className="text-xs text-slate-500 mt-1">
                           {new Date(pass.validFrom).toLocaleDateString('en-IN', {day:'2-digit',month:'short'})}
                           {' → '}
@@ -1179,10 +1188,13 @@ function ExpectedVisitorModal({ onClose, user }) {
 
 /* ─── PRE-APPROVE VISITOR MODAL ─── */
 function PreApproveVisitorModal({ onClose, user }) {
+  const [mode, setMode] = useState('guest') // 'guest' | 'event'
   const [formData, setFormData] = useState({
     name: '',
     phone: '',
     purpose: '',
+    eventName: '',
+    approxPeopleCount: '',
     validFrom: '',
     validUntil: '',
     photo: null
@@ -1209,24 +1221,42 @@ function PreApproveVisitorModal({ onClose, user }) {
     setLoading(true)
     setError('')
     try {
-      if (!validatePhoneFormat(formData.phone)) {
-        throw new Error('Phone number must be +91 followed by 10 digits.')
-      }
       if (new Date(formData.validFrom) >= new Date(formData.validUntil)) {
         throw new Error('Valid Until must be after Valid From time.')
       }
 
-      const passData = {
-        name: formData.name,
-        phone: formData.phone,
-        purpose: formData.purpose,
-        flatGate: user.flatGate || user.flat,
-        societyName: user.societyName,
-        residentUid: user.uid,
-        validFrom: new Date(formData.validFrom).toISOString(),
-        validUntil: new Date(formData.validUntil).toISOString(),
-        type: 'pre_approved_visitor',
-        photo: formData.photo
+      let passData = {}
+      if (mode === 'guest') {
+        if (!validatePhoneFormat(formData.phone)) {
+          throw new Error('Phone number must be +91 followed by 10 digits.')
+        }
+        passData = {
+          name: formData.name,
+          phone: formData.phone,
+          purpose: formData.purpose,
+          flatGate: user.flatGate || user.flat,
+          societyName: user.societyName,
+          residentUid: user.uid,
+          validFrom: new Date(formData.validFrom).toISOString(),
+          validUntil: new Date(formData.validUntil).toISOString(),
+          type: 'pre_approved_visitor',
+          photo: formData.photo
+        }
+      } else {
+        if (!formData.eventName || !formData.approxPeopleCount) {
+          throw new Error('Please fill all event details.')
+        }
+        passData = {
+          eventName: formData.eventName,
+          approxPeopleCount: Number(formData.approxPeopleCount),
+          usageCount: 0,
+          flatGate: user.flatGate || user.flat,
+          societyName: user.societyName,
+          residentUid: user.uid,
+          validFrom: new Date(formData.validFrom).toISOString(),
+          validUntil: new Date(formData.validUntil).toISOString(),
+          type: 'event_pass'
+        }
       }
 
       const id = await createPreApprovedPass(passData)
@@ -1280,8 +1310,17 @@ function PreApproveVisitorModal({ onClose, user }) {
             </div>
             
             <div className="text-left text-xs text-slate-500 bg-slate-800/30 p-3 rounded-lg space-y-1">
-              <p><span className="text-slate-400 font-medium">Visitor:</span> {formData.name}</p>
-              <p><span className="text-slate-400 font-medium">Phone:</span> {formData.phone}</p>
+              {mode === 'guest' ? (
+                <>
+                  <p><span className="text-slate-400 font-medium">Visitor:</span> {formData.name}</p>
+                  <p><span className="text-slate-400 font-medium">Phone:</span> {formData.phone}</p>
+                </>
+              ) : (
+                <>
+                  <p><span className="text-slate-400 font-medium">Event:</span> {formData.eventName}</p>
+                  <p><span className="text-slate-400 font-medium">Max People:</span> {formData.approxPeopleCount}</p>
+                </>
+              )}
               <p><span className="text-slate-400 font-medium">Valid:</span> {new Date(formData.validFrom).toLocaleString()} to {new Date(formData.validUntil).toLocaleString()}</p>
             </div>
 
@@ -1296,18 +1335,39 @@ function PreApproveVisitorModal({ onClose, user }) {
           </div>
         ) : (
           <form onSubmit={handleSubmit} className="space-y-4">
-            <div>
-              <label className="block text-sm text-slate-400 mb-1.5">Visitor Name *</label>
-              <input type="text" placeholder="Full name" className="input-field" required value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} />
+            <div className="flex gap-2 p-1 bg-slate-800 rounded-xl mb-4">
+              <button type="button" onClick={() => setMode('guest')} className={`flex-1 py-1.5 text-xs font-semibold rounded-lg transition-colors ${mode === 'guest' ? 'bg-indigo-500 text-white' : 'text-slate-400 hover:text-white'}`}>Guest Pass</button>
+              <button type="button" onClick={() => setMode('event')} className={`flex-1 py-1.5 text-xs font-semibold rounded-lg transition-colors ${mode === 'event' ? 'bg-purple-500 text-white' : 'text-slate-400 hover:text-white'}`}>Event Pass</button>
             </div>
-            <div>
-              <label className="block text-sm text-slate-400 mb-1.5">Phone Number *</label>
-              <input type="tel" placeholder="+91 9876543210" className="input-field" required value={formData.phone} onChange={e => setFormData({...formData, phone: e.target.value})} />
-            </div>
-            <div>
-              <label className="block text-sm text-slate-400 mb-1.5">Purpose of Visit *</label>
-              <input type="text" placeholder="e.g. Guest, Delivery, Repair..." className="input-field" required value={formData.purpose} onChange={e => setFormData({...formData, purpose: e.target.value})} />
-            </div>
+            
+            {mode === 'guest' ? (
+              <>
+                <div>
+                  <label className="block text-sm text-slate-400 mb-1.5">Visitor Name *</label>
+                  <input type="text" placeholder="Full name" className="input-field" required value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} />
+                </div>
+                <div>
+                  <label className="block text-sm text-slate-400 mb-1.5">Phone Number *</label>
+                  <input type="tel" placeholder="+91 9876543210" className="input-field" required value={formData.phone} onChange={e => setFormData({...formData, phone: e.target.value})} />
+                </div>
+                <div>
+                  <label className="block text-sm text-slate-400 mb-1.5">Purpose of Visit *</label>
+                  <input type="text" placeholder="e.g. Guest, Delivery, Repair..." className="input-field" required value={formData.purpose} onChange={e => setFormData({...formData, purpose: e.target.value})} />
+                </div>
+              </>
+            ) : (
+              <>
+                <div>
+                  <label className="block text-sm text-slate-400 mb-1.5">Event Name *</label>
+                  <input type="text" placeholder="e.g. Birthday Party" className="input-field" required value={formData.eventName} onChange={e => setFormData({...formData, eventName: e.target.value})} />
+                </div>
+                <div>
+                  <label className="block text-sm text-slate-400 mb-1.5">Approx People Count *</label>
+                  <input type="number" min="1" placeholder="e.g. 30" className="input-field" required value={formData.approxPeopleCount} onChange={e => setFormData({...formData, approxPeopleCount: e.target.value})} />
+                </div>
+              </>
+            )}
+
             <div>
               <label className="block text-sm text-slate-400 mb-1.5">Flat Number</label>
               <input type="text" value={user.flatGate || user.flat} className="input-field opacity-50 cursor-not-allowed" disabled />
@@ -1323,29 +1383,31 @@ function PreApproveVisitorModal({ onClose, user }) {
               </div>
             </div>
 
-            <div>
-              <label className="block text-sm text-slate-400 mb-1.5">Visitor Photo (Optional)</label>
-              <div className="relative border-2 border-dashed border-slate-700 rounded-xl p-4 text-center hover:bg-slate-800/50 transition-colors">
-                <input 
-                  type="file" 
-                  accept="image/*" 
-                  capture="environment" 
-                  className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                  onChange={handlePhotoCapture} 
-                />
-                {formData.photo ? (
-                  <div className="flex items-center justify-center gap-2 text-green-400">
-                    <CheckCircle className="w-4 h-4" />
-                    <span className="text-sm">Photo Captured</span>
-                  </div>
-                ) : (
-                  <div className="flex items-center justify-center gap-2 text-slate-500">
-                    <Camera className="w-5 h-5" />
-                    <span className="text-sm">Tap to take a photo or upload</span>
-                  </div>
-                )}
+            {mode === 'guest' && (
+              <div>
+                <label className="block text-sm text-slate-400 mb-1.5">Visitor Photo (Optional)</label>
+                <div className="relative border-2 border-dashed border-slate-700 rounded-xl p-4 text-center hover:bg-slate-800/50 transition-colors">
+                  <input 
+                    type="file" 
+                    accept="image/*" 
+                    capture="environment" 
+                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                    onChange={handlePhotoCapture} 
+                  />
+                  {formData.photo ? (
+                    <div className="flex items-center justify-center gap-2 text-green-400">
+                      <CheckCircle className="w-4 h-4" />
+                      <span className="text-sm">Photo Captured</span>
+                    </div>
+                  ) : (
+                    <div className="flex items-center justify-center gap-2 text-slate-500">
+                      <Camera className="w-5 h-5" />
+                      <span className="text-sm">Tap to take a photo or upload</span>
+                    </div>
+                  )}
+                </div>
               </div>
-            </div>
+            )}
             
             <div className="flex gap-2 pt-2">
               <button type="button" disabled={loading} onClick={onClose} className="btn-outline flex-1 justify-center">Cancel</button>
