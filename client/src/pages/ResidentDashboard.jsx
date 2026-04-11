@@ -1,4 +1,4 @@
-import { useState, useContext, useEffect } from 'react'
+import { useState, useContext, useEffect, useMemo } from 'react'
 import { AuthContext } from '../App'
 import {
   Shield, LogOut, Bell, Home, Clock, Users, History, Settings,
@@ -121,6 +121,67 @@ export default function ResidentDashboard() {
   const [chatVisitor, setChatVisitor] = useState(null)
   const [blockedVisitors, setBlockedVisitors] = useState([])
   const [loadingBlocked, setLoadingBlocked] = useState(false)
+
+  // Resident-Specific Real-time Security Alerts
+  const activeAlerts = useMemo(() => {
+    if (!user?.flatGate) return []
+    const alertsMap = new Map()
+    const allRelevantVisitors = [...visitHistory, ...todayEntries]
+
+    allRelevantVisitors.forEach(v => {
+      // 1. Face Mismatch targeting their flat
+      if (v.faceMatch === 'mismatch' || v.faceMatch === 'failed') {
+        const id = `mismatch-${v.id}`
+        alertsMap.set(id, {
+          id, type: 'critical', title: 'Face Mismatch Detected',
+          message: `Visitor "${v.name}" had a face mismatch while attempting to visit your flat.`,
+          timestamp: v.entryTimestamp || new Date().toISOString()
+        })
+      }
+
+      // 2. Late Night Entry to their flat
+      if (v.entryTimestamp) {
+        const date = new Date(v.entryTimestamp)
+        const istHours = (date.getUTCHours() + 5.5) % 24
+        if (istHours >= 0 && istHours < 5) {
+          const id = `latenight-${v.id}`
+          alertsMap.set(id, {
+            id, type: 'warning', title: 'Late Night Entry',
+            message: `Visitor "${v.name}" entered at ${date.toLocaleTimeString()} to your flat.`,
+            timestamp: v.entryTimestamp
+          })
+        }
+      }
+    })
+
+    // 3. Repeated Rejections to their flat
+    const phoneRejections = {}
+    allRelevantVisitors.forEach(v => {
+      if (v.status === 'rejected' && v.phone) {
+        if (!phoneRejections[v.phone]) phoneRejections[v.phone] = []
+        phoneRejections[v.phone].push(v)
+      }
+    })
+
+    Object.entries(phoneRejections).forEach(([phone, rejections]) => {
+      if (rejections.length >= 2) {
+        rejections.sort((a, b) => new Date(b.entryTimestamp) - new Date(a.entryTimestamp))
+        const lastRejection = rejections[0]
+        const id = `rej-${phone.replace(/\D/g, '')}`
+        alertsMap.set(id, {
+          id, type: 'warning', title: 'Repeated Visitor Rejections',
+          message: `Phone ${phone} (${lastRejection.name || 'Unknown'}) was rejected ${rejections.length} times attempting to visit you.`,
+          timestamp: lastRejection.entryTimestamp || new Date().toISOString()
+        })
+      }
+    })
+
+    // Exclude old alerts (e.g. older than 24 hours) to keep dashboard clean
+    const recentAlerts = Array.from(alertsMap.values()).filter(a => {
+      return (new Date() - new Date(a.timestamp)) < (24 * 60 * 60 * 1000)
+    })
+    return recentAlerts.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
+  }, [visitHistory, todayEntries, user?.flatGate])
 
   // Load real visitor data
   useEffect(() => {
@@ -426,6 +487,32 @@ export default function ResidentDashboard() {
         {/* HOME TAB */}
         {activeTab === 'home' && (
           <div className="animate-fade-in space-y-4">
+            {/* Security Alerts (Dynamic) */}
+            {activeAlerts && activeAlerts.length > 0 && (
+              <div className="bg-slate-800/40 border border-red-500/30 rounded-xl p-4 mb-4">
+                <div className="flex items-center gap-2 mb-3">
+                  <AlertTriangle className="w-5 h-5 text-red-400" />
+                  <h3 className="text-sm font-bold text-white">Active Security Alerts</h3>
+                </div>
+                <div className="space-y-2">
+                  {activeAlerts.map(alert => (
+                    <div key={alert.id} className={`flex items-start gap-3 p-3 rounded-xl border ${
+                      alert.type === 'critical' ? 'bg-red-500/10 border-red-500/20' : 'bg-amber-500/10 border-amber-500/20'
+                    }`}>
+                      <div className={`w-2 h-2 rounded-full mt-1.5 flex-shrink-0 ${
+                        alert.type === 'critical' ? 'bg-red-500 pulse-dot' : 'bg-amber-500'
+                      }`} />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm text-white font-medium">{alert.title}</p>
+                        <p className="text-xs text-slate-400 mt-0.5">{alert.message}</p>
+                        <p className="text-[10px] text-slate-500 mt-1">{getTimeAgo(alert.timestamp)}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {/* Stats */}
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
               <div className="stat-card">

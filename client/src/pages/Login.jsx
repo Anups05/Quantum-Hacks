@@ -1,15 +1,125 @@
 import { useState } from 'react'
-import { Shield, Eye, UserCheck, Lock, Mail, User, Building, Phone, ChevronRight } from 'lucide-react'
-import { auth, db, googleProvider } from '../firebase'
-import { signInWithEmailAndPassword, createUserWithEmailAndPassword, signInWithPopup } from 'firebase/auth'
+import { Shield, Eye, UserCheck, Lock, Mail, User, Building, Phone, ChevronRight, Search } from 'lucide-react'
+import { auth, db } from '../firebase'
+import { signInWithEmailAndPassword, createUserWithEmailAndPassword, updateProfile } from 'firebase/auth'
 import { doc, setDoc } from 'firebase/firestore'
 import { validatePhoneFormat, checkPhoneUnique } from '../utils/phoneValidation'
+import { MapContainer, TileLayer, Marker, useMapEvents, useMap, Popup } from 'react-leaflet'
+import 'leaflet/dist/leaflet.css'
+import L from 'leaflet'
+import markerIcon2x from 'leaflet/dist/images/marker-icon-2x.png'
+import markerIcon from 'leaflet/dist/images/marker-icon.png'
+import markerShadow from 'leaflet/dist/images/marker-shadow.png'
+
+// Fix default leafet markers
+delete L.Icon.Default.prototype._getIconUrl
+L.Icon.Default.mergeOptions({
+  iconRetinaUrl: markerIcon2x,
+  iconUrl: markerIcon,
+  shadowUrl: markerShadow
+})
+
+function LocationPicker({ location, setLocation, setAddress }) {
+  const map = useMapEvents({
+    click: async (e) => {
+      const lat = e.latlng.lat
+      const lng = e.latlng.lng
+      setLocation({ lat, lng })
+      try {
+        const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}`)
+        const data = await res.json()
+        setAddress(data.display_name || `${lat.toFixed(4)}, ${lng.toFixed(4)}`)
+      } catch (err) {
+        console.error('Geocoding error:', err)
+        setAddress(`${lat.toFixed(4)}, ${lng.toFixed(4)}`)
+      }
+    }
+  })
+
+  // Auto-center on user's location on first load
+  useState(() => {
+    map.locate()
+    map.on('locationfound', async (e) => {
+      map.flyTo(e.latlng, map.getZoom())
+      if (!location) {
+        const lat = e.latlng.lat
+        const lng = e.latlng.lng
+        setLocation({ lat, lng })
+        try {
+          const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}`)
+          const data = await res.json()
+          setAddress(data.display_name || `${lat.toFixed(4)}, ${lng.toFixed(4)}`)
+        } catch (err) {}
+      }
+    })
+  }, [map])
+
+  return location === null ? null : (
+    <Marker position={[location.lat, location.lng]}>
+      <Popup>Society Location Set Here</Popup>
+    </Marker>
+  )
+}
+
+function MapSearch({ setLocation, setAddress }) {
+  const map = useMap()
+  const [query, setQuery] = useState('')
+  const [isSearching, setIsSearching] = useState(false)
+
+  const handleSearch = async (e) => {
+    if (e) e.preventDefault()
+    if (!query) return
+    setIsSearching(true)
+    try {
+      const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=1`)
+      const data = await res.json()
+      if (data && data.length > 0) {
+        const lat = parseFloat(data[0].lat)
+        const lng = parseFloat(data[0].lon)
+        map.flyTo([lat, lng], 18) // High zoom to see buildings
+        setLocation({ lat, lng })
+        setAddress(data[0].display_name)
+      } else {
+        alert('Building not found. Try a different search term.')
+      }
+    } catch (err) {
+      console.error('Search error:', err)
+      alert('Error searching for location.')
+    } finally {
+      setIsSearching(false)
+    }
+  }
+
+  return (
+    <div className="absolute top-2 left-1/2 -translate-x-1/2 z-[1000] w-11/12 max-w-sm">
+      <div className="flex relative shadow-lg rounded-md overflow-hidden shadow-black/20">
+        <input 
+          type="text" 
+          value={query} 
+          onChange={e => setQuery(e.target.value)} 
+          onKeyDown={(e) => { if (e.key === 'Enter') handleSearch(e); }}
+          placeholder="Search building..." 
+          className="w-full px-3 py-2 text-sm bg-white text-slate-800 border-none outline-none placeholder:text-slate-500"
+        />
+        <button 
+          type="button" 
+          onClick={handleSearch}
+          disabled={isSearching}
+          className="bg-indigo-500 text-white px-3 hover:bg-indigo-600 transition-colors flex items-center justify-center disabled:opacity-50"
+        >
+          {isSearching ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"/> : <Search className="w-4 h-4 text-white" />}
+        </button>
+      </div>
+    </div>
+  )
+}
 
 export default function Login() {
   const [isRegister, setIsRegister] = useState(false)
   const [selectedRole, setSelectedRole] = useState(null)
   const [loading, setLoading] = useState(false)
   const [errorMsg, setErrorMsg] = useState('')
+  const [mapLocation, setMapLocation] = useState(null)
 
   const [formData, setFormData] = useState({
     name: '',
@@ -63,6 +173,9 @@ export default function Login() {
         const userCredential = await createUserWithEmailAndPassword(auth, formData.email, formData.password)
         const user = userCredential.user
 
+        // Fix missing Name display - Update Auth Profile
+        await updateProfile(user, { displayName: formData.name })
+
         try {
           const isUnique = await checkPhoneUnique(formData.phoneNumber)
           if (!isUnique) {
@@ -79,6 +192,7 @@ export default function Login() {
             role: selectedRole,
             phoneNumber: formData.phoneNumber,
             societyName: formData.societyName,
+            location: mapLocation || null,
             flatGate: formData.flatGate,
             status: status,
             createdAt: new Date().toISOString()
@@ -183,10 +297,26 @@ export default function Login() {
                   </div>
                 </div>
                 <div>
-                  <label className="block text-sm text-slate-400 mb-1.5">Society/Building/Complex Name</label>
+                  <label className="block text-sm text-slate-400 mb-1.5">Locate Your Society/Building *</label>
+                  <p className="text-xs text-slate-500 mb-2">Pinpoint your building to auto-join the correct community.</p>
+                  <div className="h-64 w-full rounded-xl overflow-hidden border border-slate-700/50 relative z-0 mb-2">
+                    <MapContainer center={[20.5937, 78.9629]} zoom={4} style={{ height: '100%', width: '100%' }}>
+                      <TileLayer
+                        attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+                        url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                        maxZoom={19}
+                      />
+                      <MapSearch setLocation={setMapLocation} setAddress={(addr) => setFormData(prev => ({...prev, societyName: addr}))} />
+                      <LocationPicker 
+                        location={mapLocation} 
+                        setLocation={setMapLocation}
+                        setAddress={(address) => setFormData(prev => ({...prev, societyName: address}))} 
+                      />
+                    </MapContainer>
+                  </div>
                   <div className="relative">
                     <Building className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
-                    <input type="text" name="societyName" required placeholder="e.g. Green Valley Apts" className="input-field pl-10" value={formData.societyName} onChange={handleChange} />
+                    <input type="text" name="societyName" required readOnly placeholder="Geocoded Address" className="input-field pl-10 bg-slate-800/80 text-xs" value={formData.societyName} onChange={handleChange} />
                   </div>
                 </div>
                 <div>

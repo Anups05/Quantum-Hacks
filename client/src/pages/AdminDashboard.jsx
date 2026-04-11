@@ -1,4 +1,4 @@
-import { useState, useContext, useEffect, useRef } from 'react'
+import React, { useState, useContext, useEffect, useRef, useMemo } from 'react'
 import { AuthContext } from '../App'
 import { db } from '../firebase'
 import { secondaryAuth } from '../firebase'
@@ -13,7 +13,7 @@ import {
   Trash2, Edit, UploadCloud
 } from 'lucide-react'
 import {
-  mockVisitors, mockAlerts, mockAnalytics,
+  mockVisitors, mockAnalytics,
   formatDateTime, getTimeAgo, getStatusColor, getStatusLabel,
   getRiskBadge, getTrustColor
 } from '../data/mockData'
@@ -31,6 +31,97 @@ export default function AdminDashboard() {
   const [societyVisitors, setSocietyVisitors] = useState([])
   const [societyGuards, setSocietyGuards] = useState([])
   const [dataLoading, setDataLoading] = useState(true)
+
+  // Real-time alerts based on visitor telemetry
+  const activeAlerts = useMemo(() => {
+    if (!societyVisitors || societyVisitors.length === 0) return []
+    const alertsMap = new Map() // prevent duplicates
+
+    societyVisitors.forEach(v => {
+      // 1. Face Mismatch
+      if (v.faceMatch === 'mismatch' || v.faceMatch === 'failed') {
+        const id = `mismatch-${v.id}`
+        alertsMap.set(id, {
+          id,
+          type: 'critical',
+          title: 'Face Mismatch Detected',
+          message: `Visitor "${v.name}" had a face mismatch matching mobile ${v.phone} to Flat ${v.flatGate}.`,
+          timestamp: v.entryTimestamp || new Date().toISOString(),
+          resolved: false
+        })
+      }
+
+      // 2. Late Night Entry
+      if (v.entryTimestamp) {
+        const date = new Date(v.entryTimestamp)
+        const istHours = (date.getUTCHours() + 5.5) % 24
+        if (istHours >= 0 && istHours < 5) {
+          const id = `latenight-${v.id}`
+          alertsMap.set(id, {
+            id,
+            type: 'warning',
+            title: 'Late Night Entry',
+            message: `Visitor "${v.name}" entered at ${date.toLocaleTimeString()} to Flat ${v.flatGate}.`,
+            timestamp: v.entryTimestamp,
+            resolved: false
+          })
+        }
+      }
+    })
+
+    // 3. Multi-Activity (same phone > 1 distinct flat in recent history)
+    const phoneToFlats = {}
+    societyVisitors.forEach(v => {
+      if (!v.phone || !v.flatGate) return
+      if (!phoneToFlats[v.phone]) phoneToFlats[v.phone] = { flats: new Set(), lastVisit: v }
+      phoneToFlats[v.phone].flats.add(v.flatGate)
+      if (new Date(v.entryTimestamp) > new Date(phoneToFlats[v.phone].lastVisit.entryTimestamp)) {
+        phoneToFlats[v.phone].lastVisit = v
+      }
+    })
+
+    Object.entries(phoneToFlats).forEach(([phone, data]) => {
+      if (data.flats.size > 1) {
+        const id = `multi-${phone.replace(/\D/g, '')}`
+        alertsMap.set(id, {
+          id,
+          type: 'critical',
+          title: 'Suspicious Multi-Flat Activity',
+          message: `Phone ${phone} (${data.lastVisit.name || 'Unknown'}) visited ${data.flats.size} different flats.`,
+          timestamp: data.lastVisit.entryTimestamp || new Date().toISOString(),
+          resolved: false
+        })
+      }
+    })
+
+    // 4. Repeated Rejections (same phone rejected >= 2 times)
+    const phoneRejections = {}
+    societyVisitors.forEach(v => {
+      if (v.status === 'rejected' && v.phone) {
+        if (!phoneRejections[v.phone]) phoneRejections[v.phone] = []
+        phoneRejections[v.phone].push(v)
+      }
+    })
+
+    Object.entries(phoneRejections).forEach(([phone, rejections]) => {
+      if (rejections.length >= 2) {
+        // Sort to get the latest rejection for timestamp
+        rejections.sort((a, b) => new Date(b.entryTimestamp) - new Date(a.entryTimestamp))
+        const lastRejection = rejections[0]
+        const id = `rej-${phone.replace(/\D/g, '')}`
+        alertsMap.set(id, {
+          id,
+          type: 'warning',
+          title: 'Repeated Visitor Rejections',
+          message: `Phone ${phone} (${lastRejection.name || 'Unknown'}) was rejected ${rejections.length} times recently.`,
+          timestamp: lastRejection.entryTimestamp || new Date().toISOString(),
+          resolved: false
+        })
+      }
+    })
+
+    return Array.from(alertsMap.values()).sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
+  }, [societyVisitors])
 
   useEffect(() => {
     if (!user?.societyName) return
@@ -55,7 +146,7 @@ export default function AdminDashboard() {
     { id: 'overview', label: 'Overview', icon: LayoutDashboard },
     { id: 'verify', label: 'Verify Residents', icon: CheckCircle },
     { id: 'visitors', label: 'Visitors', icon: Users },
-    { id: 'alerts', label: 'Alerts', icon: AlertTriangle, badge: mockAlerts.filter(a => !a.resolved).length },
+    { id: 'alerts', label: 'Alerts', icon: AlertTriangle, badge: activeAlerts.filter(a => !a.resolved).length },
     { id: 'analytics', label: 'Analytics', icon: BarChart3 },
     { id: 'heatmap', label: 'Heatmap', icon: Activity },
     { id: 'guards', label: 'Guards', icon: UserCog },
@@ -150,11 +241,13 @@ export default function AdminDashboard() {
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
                 <input type="text" placeholder="Search..." className="input-field pl-10 w-64 py-2" />
               </div>
-              <button className="relative p-2 rounded-xl bg-slate-800/60 text-slate-400 hover:text-white transition-colors">
+              <button onClick={() => setActiveSection('alerts')} className="relative p-2 rounded-xl bg-slate-800/60 text-slate-400 hover:text-white transition-colors">
                 <Bell className="w-5 h-5" />
-                <span className="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-red-500 text-[10px] text-white font-bold flex items-center justify-center">
-                  {mockAlerts.filter(a => !a.resolved).length}
-                </span>
+                {activeAlerts.filter(a => !a.resolved).length > 0 && (
+                  <span className="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-red-500 text-[10px] text-white font-bold flex items-center justify-center">
+                    {activeAlerts.filter(a => !a.resolved).length}
+                  </span>
+                )}
               </button>
             </div>
           </div>
@@ -162,7 +255,7 @@ export default function AdminDashboard() {
 
         <div className="p-6 space-y-6">
           {/* OVERVIEW */}
-          {activeSection === 'overview' && <OverviewSection user={user} onNavigate={setActiveSection} societyVisitors={societyVisitors} />}
+          {activeSection === 'overview' && <OverviewSection user={user} onNavigate={setActiveSection} societyVisitors={societyVisitors} activeAlerts={activeAlerts} />}
 
           {/* VERIFY RESIDENTS */}
           {activeSection === 'verify' && <VerifyResidentsSection />}
@@ -171,7 +264,7 @@ export default function AdminDashboard() {
           {activeSection === 'visitors' && <VisitorsSection societyVisitors={societyVisitors} societyGuards={societyGuards} />}
 
           {/* ALERTS */}
-          {activeSection === 'alerts' && <AlertsSection />}
+          {activeSection === 'alerts' && <AlertsSection activeAlerts={activeAlerts} />}
 
           {/* ANALYTICS */}
           {activeSection === 'analytics' && <AnalyticsSection societyVisitors={societyVisitors} />}
@@ -190,7 +283,7 @@ export default function AdminDashboard() {
   )
 }
 
-function OverviewSection({ user, onNavigate, societyVisitors }) {
+function OverviewSection({ user, onNavigate, societyVisitors, activeAlerts }) {
   const [realStats, setRealStats] = useState({
     todayVisitors: 0,
     currentlyInside: 0,
@@ -246,11 +339,33 @@ function OverviewSection({ user, onNavigate, societyVisitors }) {
 
   }, [societyVisitors])
 
+  const riskDistribution = React.useMemo(() => {
+    let high = 0, medium = 0, low = 0
+    societyVisitors.forEach(v => {
+      if (v.status === 'rejected' || v.faceMatch === 'mismatch' || v.faceMatch === 'failed') high++
+      else if (v.status === 'pending') medium++
+      else low++
+    })
+    
+    const total = high + medium + low
+    if (total === 0) return [
+      { name: 'Low Risk', value: 100, color: '#10b981' },
+      { name: 'Medium Risk', value: 0, color: '#f59e0b' },
+      { name: 'High Risk', value: 0, color: '#ef4444' }
+    ]
+
+    return [
+      { name: 'Low Risk', value: Math.round((low/total)*100), color: '#10b981' },
+      { name: 'Medium Risk', value: Math.round((medium/total)*100), color: '#f59e0b' },
+      { name: 'High Risk', value: Math.round((high/total)*100), color: '#ef4444' }
+    ]
+  }, [societyVisitors])
+
   const stats = [
     { label: 'Visitors Today', value: realStats.todayVisitors, icon: Users, color: 'blue', trend: '', up: true },
     { label: 'Currently Inside', value: realStats.currentlyInside, icon: MapPin, color: 'green', trend: '', up: true },
     { label: 'Approval Rate', value: `${realStats.approvalRate}%`, icon: CheckCircle, color: 'emerald', trend: '', up: true },
-    { label: 'Active Alerts', value: mockAlerts.filter(a => !a.resolved).length, icon: AlertTriangle, color: 'red', trend: '', up: false },
+    { label: 'Active Alerts', value: activeAlerts.filter(a => !a.resolved).length, icon: AlertTriangle, color: 'red', trend: '', up: false },
     { label: 'This Week', value: realStats.weekVisitors, icon: TrendingUp, color: 'purple', trend: '', up: true },
   ]
 
@@ -322,7 +437,7 @@ function OverviewSection({ user, onNavigate, societyVisitors }) {
             <ResponsiveContainer width="50%" height={220}>
               <PieChart>
                 <Pie
-                  data={mockAnalytics.riskDistribution}
+                  data={riskDistribution}
                   cx="50%"
                   cy="50%"
                   innerRadius={55}
@@ -330,7 +445,7 @@ function OverviewSection({ user, onNavigate, societyVisitors }) {
                   paddingAngle={5}
                   dataKey="value"
                 >
-                  {mockAnalytics.riskDistribution.map((entry, index) => (
+                  {riskDistribution.map((entry, index) => (
                     <Cell key={index} fill={entry.color} />
                   ))}
                 </Pie>
@@ -340,7 +455,7 @@ function OverviewSection({ user, onNavigate, societyVisitors }) {
               </PieChart>
             </ResponsiveContainer>
             <div className="space-y-3">
-              {mockAnalytics.riskDistribution.map((item, i) => (
+              {riskDistribution.map((item, i) => (
                 <div key={i} className="flex items-center gap-3">
                   <div className="w-3 h-3 rounded-full" style={{ backgroundColor: item.color }} />
                   <div>
@@ -355,7 +470,7 @@ function OverviewSection({ user, onNavigate, societyVisitors }) {
       </div>
 
       {/* Bottom Row */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 gap-6">
         {/* Recent Alerts */}
         <div className="glass-card p-5">
           <div className="flex items-center justify-between mb-4">
@@ -367,7 +482,7 @@ function OverviewSection({ user, onNavigate, societyVisitors }) {
             </button>
           </div>
           <div className="space-y-2">
-            {mockAlerts.slice(0, 4).map(alert => (
+            {activeAlerts && activeAlerts.slice(0, 4).map(alert => (
               <div key={alert.id} className={`flex items-start gap-3 p-3 rounded-xl border ${
                 alert.type === 'critical' ? 'bg-red-500/5 border-red-500/15' :
                 alert.type === 'warning' ? 'bg-amber-500/5 border-amber-500/15' :
@@ -385,34 +500,6 @@ function OverviewSection({ user, onNavigate, societyVisitors }) {
                 {!alert.resolved && (
                   <button className="text-xs text-indigo-400 hover:text-indigo-300 flex-shrink-0">Resolve</button>
                 )}
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* Frequent Unknown Visitors */}
-        <div className="glass-card p-5">
-          <h3 className="text-sm font-semibold text-white mb-4 flex items-center gap-2">
-            <Eye className="w-4 h-4 text-amber-400" /> Frequent Unknown Visitors
-          </h3>
-          <div className="space-y-2">
-            {mockAnalytics.frequentUnknown.map((v, i) => (
-              <div key={i} className="flex items-center gap-3 p-3 rounded-xl bg-slate-800/40 border border-slate-700/50">
-                <div className="w-8 h-8 rounded-lg bg-slate-700 flex items-center justify-center text-xs font-bold text-slate-400">
-                  {v.name.charAt(0)}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm text-white">{v.name}</p>
-                  <p className="text-xs text-slate-500">{v.phone} • {v.visits} visits • {v.rejections} rejections</p>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-xs font-medium" style={{ color: getTrustColor(v.trustScore) }}>
-                    {v.trustScore}
-                  </span>
-                  <button className="p-1 rounded text-slate-500 hover:text-red-400">
-                    <Ban className="w-3.5 h-3.5" />
-                  </button>
-                </div>
               </div>
             ))}
           </div>
@@ -574,57 +661,73 @@ function VisitorsSection({ societyVisitors, societyGuards }) {
   )
 }
 
-function AlertsSection() {
+function AlertsSection({ activeAlerts }) {
+  const [filter, setFilter] = useState('All')
+  
+  const displayAlerts = activeAlerts.filter(a => {
+    if (filter === 'All') return true
+    if (filter === 'Resolved') return a.resolved
+    return !a.resolved && a.type.toLowerCase() === filter.toLowerCase()
+  })
+
   return (
     <div className="animate-fade-in space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-4">
         <h2 className="text-lg font-bold text-white">Security Alerts</h2>
-        <div className="flex gap-2">
-          {['All', 'Critical', 'Warning', 'Info', 'Resolved'].map(f => (
-            <button key={f} className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
-              f === 'All' ? 'bg-indigo-500/15 text-indigo-400 border border-indigo-500/30' : 'bg-slate-800/60 text-slate-400 border border-slate-700'
+        <div className="flex gap-2 flex-wrap">
+          {['All', 'Critical', 'Warning', 'Resolved'].map(f => (
+            <button key={f} onClick={() => setFilter(f)} className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+              f === filter ? 'bg-indigo-500/15 text-indigo-400 border border-indigo-500/30' : 'bg-slate-800/60 text-slate-400 border border-slate-700'
             }`}>{f}</button>
           ))}
         </div>
       </div>
 
       <div className="space-y-3">
-        {mockAlerts.map(alert => (
-          <div key={alert.id} className={`glass-card p-4 border-l-4 ${
-            alert.type === 'critical' ? 'border-l-red-500' :
-            alert.type === 'warning' ? 'border-l-amber-500' : 'border-l-blue-500'
-          } ${alert.resolved ? 'opacity-60' : ''}`}>
-            <div className="flex items-start justify-between gap-4">
-              <div className="flex items-start gap-3 flex-1">
-                <div className={`w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 ${
-                  alert.type === 'critical' ? 'bg-red-500/15' :
-                  alert.type === 'warning' ? 'bg-amber-500/15' : 'bg-blue-500/15'
-                }`}>
-                  {alert.type === 'critical' ? <AlertTriangle className="w-5 h-5 text-red-400" /> :
-                   alert.type === 'warning' ? <AlertCircle className="w-5 h-5 text-amber-400" /> :
-                   <Zap className="w-5 h-5 text-blue-400" />}
-                </div>
-                <div>
-                  <div className="flex items-center gap-2">
-                    <p className="text-sm font-semibold text-white">{alert.title}</p>
-                    <span className={`badge ${
-                      alert.type === 'critical' ? 'badge-danger' :
-                      alert.type === 'warning' ? 'badge-warning' : 'badge-info'
-                    }`}>{alert.type}</span>
-                    {alert.resolved && <span className="badge badge-success">Resolved</span>}
-                  </div>
-                  <p className="text-sm text-slate-400 mt-1">{alert.message}</p>
-                  <p className="text-xs text-slate-600 mt-2">{getTimeAgo(alert.timestamp)}</p>
-                </div>
-              </div>
-              {!alert.resolved && (
-                <button className="btn-outline text-xs py-1.5 px-3 flex-shrink-0">
-                  <CheckCircle className="w-3 h-3" /> Resolve
-                </button>
-              )}
-            </div>
+        {displayAlerts.length === 0 ? (
+          <div className="text-center p-12 bg-slate-800/20 rounded-xl border border-slate-700/30">
+            <CheckCircle className="w-12 h-12 text-emerald-500 mx-auto mb-3" />
+            <p className="text-lg font-medium text-white">Secure and Clear</p>
+            <p className="text-sm text-slate-400 mt-1">No security alerts are active in the society.</p>
           </div>
-        ))}
+        ) : (
+          displayAlerts.map(alert => (
+            <div key={alert.id} className={`glass-card p-4 border-l-4 ${
+              alert.type === 'critical' ? 'border-l-red-500' :
+              alert.type === 'warning' ? 'border-l-amber-500' : 'border-l-blue-500'
+            } ${alert.resolved ? 'opacity-60' : ''}`}>
+              <div className="flex items-start justify-between gap-4">
+                <div className="flex items-start gap-3 flex-1">
+                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 ${
+                    alert.type === 'critical' ? 'bg-red-500/15' :
+                    alert.type === 'warning' ? 'bg-amber-500/15' : 'bg-blue-500/15'
+                  }`}>
+                    {alert.type === 'critical' ? <AlertTriangle className="w-5 h-5 text-red-400" /> :
+                     alert.type === 'warning' ? <AlertCircle className="w-5 h-5 text-amber-400" /> :
+                     <Zap className="w-5 h-5 text-blue-400" />}
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <p className="text-sm font-semibold text-white">{alert.title}</p>
+                      <span className={`badge ${
+                        alert.type === 'critical' ? 'badge-danger' :
+                        alert.type === 'warning' ? 'badge-warning' : 'badge-info'
+                      }`}>{alert.type}</span>
+                      {alert.resolved && <span className="badge badge-success">Resolved</span>}
+                    </div>
+                    <p className="text-sm text-slate-400 mt-1">{alert.message}</p>
+                    <p className="text-xs text-slate-600 mt-2">{getTimeAgo(alert.timestamp)}</p>
+                  </div>
+                </div>
+                {!alert.resolved && (
+                  <button className="btn-outline text-xs py-1.5 px-3 flex-shrink-0 cursor-not-allowed opacity-50" title="Connect to backend to resolve alerts">
+                    <CheckCircle className="w-3 h-3" /> Resolve
+                  </button>
+                )}
+              </div>
+            </div>
+          ))
+        )}
       </div>
     </div>
   )

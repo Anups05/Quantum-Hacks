@@ -37,13 +37,13 @@ async function findResidentUidByFlat(societyName, flatGate) {
   
   if (snap.empty) return null
 
-  const target = String(flatGate).trim().toUpperCase().replace(/\s+/g, '')
+  const target = String(flatGate).trim().toUpperCase().replace(/[\s-]/g, '')
 
   const match = snap.docs.find(d => {
     const data = d.data()
     // Ignore non-residents (or at least prioritize residents, but we'll just check flat)
     if (data.role && data.role.toLowerCase() !== 'resident') return false
-    const docFlat = String(data.flatGate || data.flat || '').trim().toUpperCase().replace(/\s+/g, '')
+    const docFlat = String(data.flatGate || data.flat || '').trim().toUpperCase().replace(/[\s-]/g, '')
     return docFlat === target
   })
 
