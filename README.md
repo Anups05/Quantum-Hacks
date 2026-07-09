@@ -2,6 +2,8 @@
 
 A robust, modern JavaScript-based application designed to manage and monitor apartment complex security. This system handles visitor logging, resident verification, access control events, and real-time security alerts.
 
+
+
 Features:
 
 User Authentication & Roles: Secure login for Administrators, Security Guards, and Residents.
